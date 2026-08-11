@@ -165,15 +165,16 @@ The observer trigger runs on `turn_end`.
 3. Skip if `observerInFlight` is true.
 4. Count raw/source tokens since latest observation coverage.
 5. Skip if below `observeAfterTokens`.
-6. Select source entries after the latest observation coverage marker.
-7. Serialize those source entries for the observer prompt.
-8. Resolve the memory model.
-9. Run `runObserver()` in a background task.
-10. Validate source ids returned by the model.
-11. Compute deterministic 12-character ids and per-observation token counts in code.
-12. Append `om.observations.recorded` only if at least one observation was accepted.
+6. Honor any deliberate-empty backoff until another `observeAfterTokens` of source tokens arrive.
+7. Select the oldest size-capped chunk after the latest observation coverage marker.
+8. Serialize those source entries for the observer prompt.
+9. Resolve the memory model.
+10. Run `runObserver()` in a background task.
+11. Validate source ids returned by the model.
+12. Compute deterministic 12-character ids and per-observation token counts in code.
+13. Append `om.observations.recorded` only if at least one observation was accepted.
 
-If no observations are generated, the worker writes no entry and does not advance coverage. A later eligible observer run will see a larger range.
+If no observations are generated, the worker writes no entry and does not advance coverage. A later eligible observer run will see a larger range. Deliberate empty runs back off until another `observeAfterTokens` worth of new source tokens arrives, so they do not re-fire every turn. Observer chunks target a fixed 60,000 estimated tokens, oldest-first, so an oversized uncovered span drains in slices; the oldest entry is always included even if it alone exceeds the target, preventing coverage from stalling. API/stream failures surface as `observer failed` / `observer.stream_error` rather than as an empty run.
 
 ## Reflect/drop flow
 
@@ -202,11 +203,12 @@ It skips when:
 
 - `passive` is true;
 - compaction is already in flight;
-- raw/source tokens since last compaction are below `compactAfterTokens`;
+- provider context growth since the latest successful compaction is below `compactAfterTokens`;
+- the provider baseline is unavailable or incomparable and estimated source progress is below `compactAfterTokens`;
 - Pi is not idle after the deferred check;
 - the threshold is no longer met after the deferred check.
 
-When all checks pass, it calls `ctx.compact()`.
+The provider baseline uses the first valid assistant usage after compaction. A model/provider change after that baseline causes fallback to estimated source progress until a later successful compaction creates a new provider baseline. When all checks pass, it calls `ctx.compact()`.
 
 This trigger does not wait for observer, reflector, or dropper promises. That is intentional: background memory work should never make compaction feel stuck.
 

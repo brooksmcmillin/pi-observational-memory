@@ -57,7 +57,7 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 | `observeAfterTokens` | positive integer | `10000` | Raw/source token threshold for observer runs. |
 | `reflectAfterTokens` | positive integer | `20000` | Raw/source token threshold for reflector runs; successful reflection creates dropper maintenance opportunities. |
 | `observerChunkMaxTokens` | positive integer | derived; minimum `256` | Maximum estimated tokens sent to one observer run. Unset: 20% of the resolved memory model's context window, or `60000` when unknown. |
-| `compactAfterTokens` | positive integer | `81000` | Raw/source token threshold for proactive auto-compaction. |
+| `compactAfterTokens` | positive integer | `81000` | Provider context-growth threshold for proactive auto-compaction. The raw source-token estimate is the fallback when provider usage is unavailable or incomparable. |
 | `observationsPoolMaxTokens` | positive integer | `20000` | Normal compaction-projection observation-token pressure that makes compaction do a full fold. |
 | `observationsPoolTargetTokens` | positive integer below max | half of `observationsPoolMaxTokens` | Folded active observation target used by post-reflection dropper maintenance. |
 | `agentMaxTurns` | positive integer | `16` | Shared nested-agent turn cap for observer, reflector, and dropper. |
@@ -69,7 +69,7 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 | `passive` | boolean | `false` | Disables proactive background memory and auto-compaction triggers. |
 | `debugLog` | boolean | `false` | Writes best-effort per-session extension debug events to Pi's agent directory. |
 
-Valid `model.thinking` values are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`.
+Valid `model.thinking` values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`.
 
 Invalid values are ignored. Positive-integer settings must be finite integers greater than zero. `observationsPoolTargetTokens` must also be below `observationsPoolMaxTokens`; if omitted or invalid, it is derived as `Math.floor(observationsPoolMaxTokens / 2)`.
 
@@ -79,7 +79,7 @@ Default: `10000`.
 
 The observer runs from Pi's `turn_end` hook. It counts raw/source tokens after the latest `om.observations.recorded.data.coversUpToId` marker. When the count reaches `observeAfterTokens`, the observer receives source entries after that marker and may append a non-empty `om.observations.recorded` ledger entry.
 
-Lower values create smaller chunks and more frequent model calls. Higher values reduce model-call frequency but let unobserved raw conversation accumulate longer. If the observer emits no observations, no ledger entry is written and the same range remains eligible for a later observer run.
+Lower values create smaller chunks and more frequent model calls. Higher values reduce model-call frequency but let unobserved raw conversation accumulate longer. If the observer deliberately emits no observations, no ledger entry is written; the same range remains uncovered, and the observer retries after another `observeAfterTokens` of source tokens accumulate.
 
 ## `observerChunkMaxTokens`
 
@@ -103,7 +103,7 @@ Lower values distill reflections more often and therefore create more opportunit
 
 Default: `81000`.
 
-The auto-compaction trigger runs from Pi's `agent_settled` hook, after retries and queued continuation finish. It counts raw/source tokens after the latest compaction boundary. If the count reaches `compactAfterTokens`, the extension defers with `setTimeout(0)`, checks that Pi is idle, re-checks the threshold, and calls `ctx.compact()`.
+The auto-compaction trigger runs from Pi's `agent_settled` hook, after retries, automatic compaction, and queued continuation finish. It counts provider context growth after the latest successful compaction. The first valid assistant usage after compaction sets the baseline. If Pi reports unknown usage, or a model/provider change makes the baseline incomparable, the extension uses estimated source-token progress after the compaction boundary. After a model/provider change, that fallback remains until a later successful compaction creates a new provider baseline. If the count reaches `compactAfterTokens`, the extension defers with `setTimeout(0)`, checks that Pi is idle, re-checks the same metric, and calls `ctx.compact()`.
 
 This trigger does not wait for observer, reflector, or dropper work. Actual compaction summary creation happens later in `session_before_compact`. A non-empty V3 projection is rendered deterministically and model-free; an empty projection delegates to Pi's native summarizer so prior context is not replaced by an empty summary.
 
@@ -157,13 +157,13 @@ Set `model` when you want the observer, reflector, and dropper to use a cheaper 
 }
 ```
 
-`provider` and `id` must both be non-empty strings. `thinking` is optional. If the configured model cannot be resolved, the runtime attempts to fall back to the current session model and notifies once. If no usable model or API key is available, the relevant background worker skips/fails safely rather than inventing memory.
+`provider` and `id` must both be non-empty strings. `thinking` is optional. If the configured model cannot be resolved, the runtime attempts to fall back to the current session model and notifies once. Memory workers accept either an API key or OAuth-style auth headers (e.g. `Authorization: Bearer …`), so OAuth-authenticated providers work without an API key. If no usable model or credentials are available, the relevant background worker skips/fails safely rather than inventing memory.
 
 ## `showWorkerNotifications`
 
 Default: `true`.
 
-When `false`, the extension hides routine observer, reflector, and dropper progress notifications. Model fallback/unavailability, no-output warnings, worker failures, compaction notifications, and explicit `/om:*` command output remain visible.
+When `false`, the extension hides routine observer, reflector, and dropper progress notifications (including deliberate-empty observer info messages). Model fallback/unavailability, worker failures (including observer stream errors), compaction notifications, and explicit `/om:*` command output remain visible.
 
 ## `passive`
 

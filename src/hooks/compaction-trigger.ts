@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { resolveCompactAfterTokens } from "../config.js";
-import { rawTokensSinceLastCompaction, type Entry } from "../session-ledger/index.js";
+import { compactionProgress, type Entry } from "../session-ledger/index.js";
 import type { Runtime } from "../runtime.js";
 
 export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): void {
@@ -11,22 +11,24 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 		if (runtime.config.passive === true) return;
 		if (runtime.compactInFlight) return;
 
-		const entries = ctx.sessionManager.getBranch() as Entry[];
-		const tokens = rawTokensSinceLastCompaction(entries);
-		// Resolve the proactive-compaction threshold from the active model's context
-		// window when ratio mode is configured. ctx.model is the current session model
-		// (Model<any> | undefined per ExtensionContext).
-		const contextWindow = typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : undefined;
+		const entries = ctx.sessionManager?.getBranch?.() as Entry[] | undefined;
+		if (!entries) return;
+		const contextUsage = typeof ctx.getContextUsage === "function" ? ctx.getContextUsage() : undefined;
+		const progress = compactionProgress(entries, contextUsage?.tokens);
+		const contextWindow =
+			contextUsage?.contextWindow
+			?? (typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : undefined);
 		const threshold = resolveCompactAfterTokens(runtime.config, contextWindow);
-		if (tokens < threshold) return;
+		if (progress.tokens < threshold) return;
 
 		// Capture ctx properties synchronously — the setTimeout + async work below
 		// may outlive the extension ctx (stale after session replacement/reload).
 		const hasUI = ctx.hasUI;
 		const ui = ctx.ui;
 
+		const progressLabel = progress.source === "provider" ? "provider context growth" : "estimated source";
 		if (hasUI) ui?.notify(
-			`Observational memory: compaction threshold reached (~${tokens.toLocaleString()} tokens); triggering compaction`,
+			`Observational memory: compaction threshold reached (~${progress.tokens.toLocaleString()} ${progressLabel} tokens); triggering compaction`,
 			"info",
 		);
 
@@ -41,9 +43,14 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 					);
 					return;
 				}
-				const currentEntries = ctx.sessionManager.getBranch() as Entry[];
-				const currentTokens = rawTokensSinceLastCompaction(currentEntries);
-				if (currentTokens < threshold) {
+				const currentEntries = ctx.sessionManager?.getBranch?.() as Entry[] | undefined;
+				if (!currentEntries) {
+					runtime.compactInFlight = false;
+					return;
+				}
+				const currentUsage = typeof ctx.getContextUsage === "function" ? ctx.getContextUsage() : undefined;
+				const currentProgress = compactionProgress(currentEntries, currentUsage?.tokens);
+				if (currentProgress.tokens < threshold) {
 					runtime.compactInFlight = false;
 					if (hasUI) ui?.notify(
 						"Observational memory: compaction skipped — another compaction already ran before deferred compaction",
