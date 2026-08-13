@@ -41,6 +41,7 @@ interface RunDropperArgs {
 	model: Model<any>;
 	apiKey?: string;
 	headers?: Record<string, string>;
+	env?: Record<string, string>;
 	reflections: Reflection[];
 	observations: Observation[];
 	targetTokens: number;
@@ -131,7 +132,7 @@ export function selectDropCandidates(
 }
 
 export async function runDropper(args: RunDropperArgs): Promise<string[] | undefined> {
-	const { model, apiKey, headers, reflections, observations, targetTokens, signal } = args;
+	const { model, apiKey, headers, env, reflections, observations, targetTokens, signal } = args;
 	if (observations.length === 0) return undefined;
 
 	const metrics = observationPoolMetrics(observations, targetTokens);
@@ -243,6 +244,7 @@ export async function runDropper(args: RunDropperArgs): Promise<string[] | undef
 		model,
 		apiKey,
 		headers,
+		env,
 		maxTokens: boundedMaxTokens(model, AGENT_LOOP_MAX_TOKENS),
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",

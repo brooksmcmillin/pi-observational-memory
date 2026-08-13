@@ -159,4 +159,29 @@ describe("Runtime V3 behavior", () => {
 		expect(runtime.consolidationInFlight).toBe(false);
 		expect(runtime.consolidationPhase).toBeUndefined();
 	});
+
+	it("forwards env and baseUrl from model registry", async () => {
+		const runtime = new Runtime();
+		const model = { provider: "cloudflare-workers-ai", id: "@cf/mistralai/mistral-small-3.1-24b-instruct" };
+		const registry = modelRegistry({
+			auth: {
+				ok: true,
+				apiKey: "test-key",
+				headers: { Authorization: "Bearer test" },
+				env: { CLOUDFLARE_ACCOUNT_ID: "abc123" },
+				baseUrl: "https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1"
+			}
+		});
+
+		const result = await runtime.resolveModel({ model, modelRegistry: registry, hasUI: false });
+
+		expect(result).toEqual({
+			ok: true,
+			model,
+			apiKey: "test-key",
+			headers: { Authorization: "Bearer test" },
+			env: { CLOUDFLARE_ACCOUNT_ID: "abc123" },
+			baseUrl: "https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1"
+		});
+	});
 });

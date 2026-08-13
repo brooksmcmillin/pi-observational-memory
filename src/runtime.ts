@@ -1,7 +1,7 @@
 import { type Config, DEFAULTS, loadConfig } from "./config.js";
 
 export type ResolveResult =
-	| { ok: true; model: unknown; apiKey?: string; headers?: Record<string, string> }
+	| { ok: true; model: unknown; apiKey?: string; headers?: Record<string, string>; env?: Record<string, string>; baseUrl?: string }
 	| { ok: false; reason: string };
 
 /**
@@ -85,7 +85,14 @@ export class Runtime {
 				: `no API key or auth headers for provider "${provider}"`;
 			return { ok: false, reason };
 		}
-		return { ok: true, model, apiKey: auth.apiKey as string | undefined, headers: auth.headers as Record<string, string> | undefined };
+		return {
+		ok: true,
+		model,
+		apiKey: auth.apiKey as string | undefined,
+		headers: auth.headers as Record<string, string> | undefined,
+		env: auth.env as Record<string, string> | undefined,
+		baseUrl: auth.baseUrl as string | undefined,
+	};
 	}
 
 	launchConsolidationTask(ctx: LaunchCtx, work: () => Promise<void>): Promise<void> {
