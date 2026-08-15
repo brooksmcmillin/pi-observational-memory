@@ -9,6 +9,7 @@ import {
 	type Observation,
 	type Reflection,
 } from "./types.js";
+import { foldWorkingState, type WorkingStateItem } from "./working-state.js";
 
 export type Projection = {
 	observations: Observation[];
@@ -28,6 +29,8 @@ export type CompactionProjectionConfig = {
 export type CompactionProjection = Projection & {
 	fullFold: boolean;
 	details: MemoryDetails;
+	workingState: WorkingStateItem[];
+	hadPriorMemory: boolean;
 };
 
 type ProjectionBoundary =
@@ -138,6 +141,17 @@ function latestV3CompactionDetails(entries: Entry[]): MemoryDetails | undefined 
 	return undefined;
 }
 
+function everRenderedIds(entries: Entry[]): { observations: Set<string>; reflections: Set<string> } {
+	const observations = new Set<string>();
+	const reflections = new Set<string>();
+	for (const entry of entries) {
+		if (entry.type !== "compaction" || !isMemoryDetails(entry.details)) continue;
+		for (const observation of entry.details.observations) observations.add(observation.id);
+		for (const reflection of entry.details.reflections) reflections.add(reflection.id);
+	}
+	return { observations, reflections };
+}
+
 export function fullProjection(entries: Entry[], upToEntryId?: string): Projection {
 	const boundary = upToEntryId ? entryBoundary(upToEntryId) : tipBoundary();
 	return foldProjection(entries, {
@@ -190,20 +204,38 @@ export function buildCompactionProjection(
 	const projection = fullFold
 		? fullProjection(entries, firstKeptEntryId)
 		: normalProjection;
+	const latestDetails = latestV3CompactionDetails(entries);
+	const incremental = latestDetails?.summaryMode === "incremental" &&
+		latestDetails.renderedThroughId !== undefined &&
+		entryIndexById(entries).has(latestDetails.renderedThroughId);
+	const rendered = everRenderedIds(entries);
+	const deltaObservations = incremental
+		? projection.observations.filter((observation) => !rendered.observations.has(observation.id))
+		: projection.observations;
+	// Reflections are the stable, long-lived synthesis layer. Unlike observations,
+	// they must remain in every replacement summary after first becoming visible.
+	const visibleReflections = projection.reflections;
+	const workingState = foldWorkingState(entries, firstKeptEntryId);
+	const visibleObservations = [...workingState.map((item) => item.observation), ...deltaObservations]
+		.filter((observation, index, all) => all.findIndex((candidate) => candidate.id === observation.id) === index);
 
 	const details: MemoryDetails = {
 		type: OM_FOLDED,
 		version: 1,
 		fullFold,
-		observations: projection.observations,
-		reflections: projection.reflections,
+		observations: visibleObservations,
+		reflections: visibleReflections,
+		summaryMode: "incremental",
+		renderedThroughId: firstKeptEntryId,
 	};
 
 	return {
 		fullFold,
-		observations: projection.observations,
-		reflections: projection.reflections,
+		observations: visibleObservations,
+		reflections: visibleReflections,
 		details,
+		workingState,
+		hadPriorMemory: latestDetails !== undefined,
 	};
 }
 

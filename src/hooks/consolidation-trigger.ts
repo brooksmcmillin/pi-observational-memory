@@ -17,6 +17,7 @@ import {
 	earlierCoverageMarkerId,
 	foldLedger,
 	fullProjection,
+	foldWorkingState,
 	isSourceEntry,
 	latestCoverageIndex,
 	latestCoverageMarkerId,
@@ -25,6 +26,7 @@ import {
 	rawTokensSinceObservationCoverage,
 	rawTokensSinceReflectionCoverage,
 	reflectionToSummaryLine,
+	workingStateToSummaryLine,
 	type Entry,
 	type Observation,
 	type Reflection,
@@ -290,6 +292,7 @@ async function runObserverStage(
 	const memory = fullProjection(entries);
 	const priorReflections = memory.reflections.map(reflectionToSummaryLine);
 	const priorObservations = memory.observations.map(observationToSummaryLine);
+	const priorWorkingState = foldWorkingState(entries, coversUpToId).map(workingStateToSummaryLine);
 
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
 		`Observational memory: observer running on ~${chunkTokens.toLocaleString()}-token chunk`,
@@ -303,6 +306,7 @@ async function runObserverStage(
 		sourceEntryCount: sourceEntryIds.length,
 		priorReflections: priorReflections.length,
 		priorObservations: priorObservations.length,
+		priorWorkingState: priorWorkingState.length,
 	});
 
 	let observations: Observation[] | undefined;
@@ -313,6 +317,7 @@ async function runObserverStage(
 			headers: resolved.headers,
 			priorReflections,
 			priorObservations,
+			priorWorkingState,
 			chunk,
 			allowedSourceEntryIds: sourceEntryIds,
 			maxTurns: runtime.config.agentMaxTurns,

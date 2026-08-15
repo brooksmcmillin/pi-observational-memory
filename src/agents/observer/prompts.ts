@@ -7,6 +7,7 @@ Your job is to compress a chunk of recent conversation into timestamped, rated o
 You receive:
 - Current reflections (long-lived facts already crystallized).
 - Current observations (already-recorded observations, each shown as "[id] YYYY-MM-DD HH:MM [relevance] content").
+- Current working state annotations so stable keys can be reused when state changes or resolves.
 - A new chunk of conversation with source entry labels and inline message timestamps. Each source block starts with "[Source entry id: <id>]" followed by content formatted as "[User @ YYYY-MM-DD HH:MM]:", "[Assistant @ ...]:", "[Tool result for <name> @ ...]:", custom messages, or branch summaries.
 - A current local time fallback for observations that have no obvious message timestamp.
 
@@ -23,6 +24,7 @@ What to emit:
 - For every observation, include sourceEntryIds: the smallest exact set of "[Source entry id: ...]" ids that directly support the observation.
 - Never invent source entry ids. Use only ids printed in the chunk. If an observation spans multiple turns or tool results, include every supporting source entry id.
 - Observations with missing, empty, or invalid sourceEntryIds will be rejected and not recorded, so do not call record_observations until you can cite valid source ids.
+- Add workingState only for operational orientation: branch, worktree, pull_request, verification, decision, blocker, or next_action. Use key "current" for branch, worktree, pull_request, and next_action. Use a stable topic or check key for collections. Emit status "resolved" when an active item ends.
 - Group repeated similar tool calls into a single observation rather than one per call.
 - Skip routine, low-information events. It is fine to emit zero observations if the chunk carries no new information — in that case, simply do not call the tool and end with a plain-text confirmation.
 

@@ -5,6 +5,13 @@ export const OM_FOLDED = "om.folded";
 
 export const RELEVANCE_VALUES = ["low", "medium", "high", "critical"] as const;
 export type Relevance = (typeof RELEVANCE_VALUES)[number];
+export const WORKING_STATE_SLOTS = ["branch", "worktree", "pull_request", "verification", "decision", "blocker", "next_action"] as const;
+export type WorkingStateSlot = (typeof WORKING_STATE_SLOTS)[number];
+export type WorkingStateAnnotation = {
+	slot: WorkingStateSlot;
+	key: string;
+	status: "active" | "resolved";
+};
 
 export const MEMORY_ID_PATTERN = /^[a-f0-9]{12}$/;
 
@@ -29,6 +36,7 @@ export type Observation = {
 	relevance: Relevance;
 	sourceEntryIds: string[];
 	tokenCount: number;
+	workingState?: WorkingStateAnnotation;
 };
 
 export type Reflection = {
@@ -59,6 +67,9 @@ export type MemoryDetails = {
 	fullFold: boolean;
 	observations: Observation[];
 	reflections: Reflection[];
+	/** Marks details whose observation/reflection arrays match the rendered incremental summary. */
+	summaryMode?: "incremental";
+	renderedThroughId?: string;
 };
 
 export type V3MemoryCustomType =
@@ -90,6 +101,16 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object";
 }
 
+export function isWorkingStateAnnotation(value: unknown): value is WorkingStateAnnotation {
+	if (!isPlainRecord(value)) return false;
+	return (
+		typeof value.slot === "string" &&
+		(WORKING_STATE_SLOTS as readonly string[]).includes(value.slot) &&
+		isNonEmptyString(value.key) &&
+		(value.status === "active" || value.status === "resolved")
+	);
+}
+
 export function isObservation(value: unknown): value is Observation {
 	if (!isPlainRecord(value)) return false;
 	return (
@@ -98,7 +119,8 @@ export function isObservation(value: unknown): value is Observation {
 		isNonEmptyString(value.timestamp) &&
 		isRelevance(value.relevance) &&
 		isNonEmptyStringArray(value.sourceEntryIds) &&
-		isTokenCount(value.tokenCount)
+		isTokenCount(value.tokenCount) &&
+		(value.workingState === undefined || isWorkingStateAnnotation(value.workingState))
 	);
 }
 
@@ -147,7 +169,9 @@ export function isMemoryDetails(value: unknown): value is MemoryDetails {
 		Array.isArray(value.observations) &&
 		value.observations.every(isObservation) &&
 		Array.isArray(value.reflections) &&
-		value.reflections.every(isReflection)
+		value.reflections.every(isReflection) &&
+		(value.summaryMode === undefined || value.summaryMode === "incremental") &&
+		(value.renderedThroughId === undefined || isNonEmptyString(value.renderedThroughId))
 	);
 }
 

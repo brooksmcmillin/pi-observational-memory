@@ -192,6 +192,80 @@ describe("session-ledger V3 projections", () => {
 		expect(buildCompactionProjection(entries, "raw-1", { observationsPoolMaxTokens: 50 }).fullFold).toBe(true);
 	});
 
+	it("renders one legacy baseline, then emits only never-rendered records", () => {
+		const obs1 = observation("aaaaaaaaaaaa");
+		const obs2 = observation("bbbbbbbbbbbb");
+		const ref1 = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]);
+		const entries = [
+			textCustomMessage("raw-1", "one"),
+			observationsRecordedEntry("om-1", { observations: [obs1], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref-1", { reflections: [ref1], coversUpToId: "raw-1" }),
+			compactionEntry("legacy", { firstKeptEntryId: "raw-1", details: memoryDetails({ observations: [obs1], reflections: [ref1] }) }),
+			textCustomMessage("raw-2", "two"),
+			observationsRecordedEntry("om-2", { observations: [obs2], coversUpToId: "raw-2" }),
+		];
+		const baseline = buildCompactionProjection(entries, "raw-2", { observationsPoolMaxTokens: 100 });
+		expect(baseline.observations.map((item) => item.id)).toEqual(["aaaaaaaaaaaa", "bbbbbbbbbbbb"]);
+		expect(baseline.details.summaryMode).toBe("incremental");
+
+		entries.push(compactionEntry("marked", { firstKeptEntryId: "raw-2", details: baseline.details }));
+		entries.push(textCustomMessage("raw-3", "three"));
+		const next = buildCompactionProjection(entries, "raw-3", { observationsPoolMaxTokens: 1 });
+		expect(next.fullFold).toBe(true);
+		expect(next.observations).toEqual([]);
+		expect(next.reflections).toEqual([ref1]);
+	});
+
+	it("includes late observations that cite an older retained source", () => {
+		const obs1 = observation("aaaaaaaaaaaa");
+		const late = observation("bbbbbbbbbbbb", { sourceEntryIds: ["raw-1"] });
+		const entries = [
+			textCustomMessage("raw-1", "one"),
+			observationsRecordedEntry("om-1", { observations: [obs1], coversUpToId: "raw-1" }),
+			compactionEntry("marked", { firstKeptEntryId: "raw-1", details: memoryDetails({
+				observations: [obs1], summaryMode: "incremental", renderedThroughId: "raw-1",
+			}) }),
+			observationsRecordedEntry("om-late", { observations: [late], coversUpToId: "raw-1" }),
+			textCustomMessage("raw-2", "two"),
+		];
+
+		expect(buildCompactionProjection(entries, "raw-2", { observationsPoolMaxTokens: 100 })
+			.observations.map((item) => item.id)).toEqual(["bbbbbbbbbbbb"]);
+	});
+
+	it("falls back to a full baseline when the prior incremental boundary dangles", () => {
+		const obs1 = observation("aaaaaaaaaaaa");
+		const entries = [
+			textCustomMessage("raw-1", "one"),
+			observationsRecordedEntry("om-1", { observations: [obs1], coversUpToId: "raw-1" }),
+			compactionEntry("marked", { firstKeptEntryId: "raw-1", details: memoryDetails({
+				observations: [obs1], summaryMode: "incremental", renderedThroughId: "missing",
+			}) }),
+		];
+		expect(buildCompactionProjection(entries, "raw-1", { observationsPoolMaxTokens: 100 })
+			.observations.map((item) => item.id)).toEqual(["aaaaaaaaaaaa"]);
+	});
+
+	it("carries an old pinned state record without replaying other old observations", () => {
+		const pinned = observation("aaaaaaaaaaaa", {
+			workingState: { slot: "next_action", key: "current", status: "active" },
+		});
+		const old = observation("bbbbbbbbbbbb");
+		const fresh = observation("cccccccccccc");
+		const entries = [
+			textCustomMessage("raw-1", "one"),
+			observationsRecordedEntry("om-1", { observations: [pinned, old], coversUpToId: "raw-1" }),
+			compactionEntry("marked", { firstKeptEntryId: "raw-1", details: memoryDetails({
+				observations: [pinned, old], summaryMode: "incremental", renderedThroughId: "raw-1",
+			}) }),
+			textCustomMessage("raw-2", "two"),
+			observationsRecordedEntry("om-2", { observations: [fresh], coversUpToId: "raw-2" }),
+		];
+		const result = buildCompactionProjection(entries, "raw-2", { observationsPoolMaxTokens: 100 });
+		expect(result.observations.map((item) => item.id)).toEqual(["aaaaaaaaaaaa", "cccccccccccc"]);
+		expect(result.workingState.map((item) => item.observation.id)).toEqual(["aaaaaaaaaaaa"]);
+	});
+
 	it("reports visible/full drift", () => {
 		const visible = { observations: [observation("aaaaaaaaaaaa")], reflections: [] };
 		const full = {

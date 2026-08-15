@@ -8,7 +8,7 @@ import { logAgentStreamError } from "../stream-errors.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
 import { OBSERVER_SYSTEM } from "./prompts.js";
 import { nowTimestamp, truncateRecordContent } from "../../serialize.js";
-import type { Observation, Relevance } from "../../session-ledger/index.js";
+import { WORKING_STATE_SLOTS, type Observation, type Relevance, type WorkingStateAnnotation } from "../../session-ledger/index.js";
 import { observationLineTokenCount } from "../../tokens.js";
 
 interface RunObserverArgs {
@@ -17,6 +17,7 @@ interface RunObserverArgs {
 	headers?: Record<string, string>;
 	priorReflections: string[];
 	priorObservations: string[];
+	priorWorkingState?: string[];
 	chunk: string;
 	allowedSourceEntryIds: string[];
 	signal?: AbortSignal;
@@ -31,6 +32,11 @@ const RelevanceSchema = Type.Union([
 	Type.Literal("high"),
 	Type.Literal("critical"),
 ]);
+const WorkingStateSchema = Type.Object({
+	slot: Type.Union(WORKING_STATE_SLOTS.map((slot) => Type.Literal(slot))),
+	key: Type.String({ minLength: 1 }),
+	status: Type.Union([Type.Literal("active"), Type.Literal("resolved")]),
+});
 
 export const OBSERVATION_TIMESTAMP_PATTERN = "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}$";
 
@@ -46,7 +52,7 @@ const RecordObservationsSchema = Type.Object({
 				description: "Single-line plain prose. No markdown, no tags, no embedded timestamp.",
 			}),
 			relevance: RelevanceSchema,
-			sourceEntryIds: Type.Array(
+				sourceEntryIds: Type.Array(
 				Type.String({ minLength: 1 }),
 				{
 					minItems: 1,
@@ -54,7 +60,8 @@ const RecordObservationsSchema = Type.Object({
 						"Exact source entry ids from the chunk that directly support this observation. " +
 						"Use only ids shown in '[Source entry id: ...]' labels; never invent ids.",
 				},
-			),
+				),
+				workingState: Type.Optional(WorkingStateSchema),
 		}),
 		{ description: "Batch of new observations. May be empty only if the tool is not called at all." },
 	),
@@ -99,7 +106,7 @@ export function normalizeSourceEntryIds(
 }
 
 export async function runObserver(args: RunObserverArgs): Promise<Observation[] | undefined> {
-	const { model, apiKey, headers, priorReflections, priorObservations, chunk, allowedSourceEntryIds, signal } = args;
+	const { model, apiKey, headers, priorReflections, priorObservations, priorWorkingState = [], chunk, allowedSourceEntryIds, signal } = args;
 	const conversation = chunk.trim();
 	if (!conversation) return undefined;
 
@@ -141,6 +148,7 @@ export async function runObserver(args: RunObserverArgs): Promise<Observation[] 
 						relevance: obs.relevance,
 						content,
 					}),
+					...(obs.workingState ? { workingState: obs.workingState as WorkingStateAnnotation } : {}),
 				});
 				added++;
 			}
@@ -165,6 +173,9 @@ ${joinOrEmpty(priorReflections)}
 
 CURRENT OBSERVATIONS:
 ${joinOrEmpty(priorObservations)}
+
+CURRENT WORKING STATE:
+${joinOrEmpty(priorWorkingState)}
 
 Compress the following new conversation chunk into observations by calling record_observations one or more times. Do not restate facts already present in current reflections or current observations. Prefer inline conversation timestamps when assigning times; fall back to the current local time above only if no message timestamp applies. Stop calling the tool and reply with a short plain-text confirmation once the chunk is fully covered.
 

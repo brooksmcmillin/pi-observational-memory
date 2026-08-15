@@ -80,6 +80,29 @@ describe("runObserver", () => {
 		expect(observations?.[0].id).toMatch(/^[a-f0-9]{12}$/);
 	});
 
+	it("records working-state annotations and supplies current state for key reuse", async () => {
+		let userPrompt = "";
+		const loop = fakeAgentLoop(async (prompts, context) => {
+			userPrompt = prompts[0].content[0].text;
+			await context.tools[0].execute("tool-1", {
+				observations: [{
+					timestamp: "2026-05-02 10:30",
+					content: "CI remains blocked.",
+					relevance: "high",
+					sourceEntryIds: ["entry-a"],
+					workingState: { slot: "blocker", key: "ci", status: "active" },
+				}],
+			});
+		});
+		const observations = await runObserver({
+			...baseArgs,
+			priorWorkingState: ["- blocker/ci: Prior failure [aaaaaaaaaaaa]"],
+			agentLoop: loop,
+		});
+		expect(observations?.[0].workingState).toEqual({ slot: "blocker", key: "ci", status: "active" });
+		expect(userPrompt).toContain("CURRENT WORKING STATE:\n- blocker/ci: Prior failure");
+	});
+
 	it("rejects invented source ids and returns no observations", async () => {
 		const loop = fakeAgentLoop(async (_prompts, context) => {
 			await context.tools[0].execute("tool-1", {

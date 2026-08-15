@@ -14,6 +14,7 @@ import {
 	isObservationsRecordedData,
 	isObservationsRecordedEntry,
 	isObservation,
+	isWorkingStateAnnotation,
 	isReflection,
 	isReflectionsRecordedData,
 	isReflectionsRecordedEntry,
@@ -42,6 +43,17 @@ describe("session-ledger V3 type guards and builders", () => {
 		expect(isObservation({ ...observation("bbbbbbbbbbbb"), sourceEntryIds: [] })).toBe(false);
 		expect(isObservation({ ...observation("cccccccccccc"), sourceEntryIds: undefined })).toBe(false);
 		expect(isObservation({ ...observation("dddddddddddd"), tokenCount: undefined })).toBe(false);
+	});
+
+	it("accepts optional structured working state and rejects malformed annotations", () => {
+		expect(isWorkingStateAnnotation({ slot: "blocker", key: "ci", status: "active" })).toBe(true);
+		expect(isObservation(observation("aaaaaaaaaaaa", {
+			workingState: { slot: "next_action", key: "current", status: "active" },
+		}))).toBe(true);
+		expect(isObservation({
+			...observation("bbbbbbbbbbbb"),
+			workingState: { slot: "unknown", key: "", status: "pending" },
+		})).toBe(false);
 	});
 
 	it("accepts valid V3 reflection records", () => {
@@ -106,6 +118,8 @@ describe("session-ledger V3 type guards and builders", () => {
 			observations: [observation("aaaaaaaaaaaa")],
 			reflections: [reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"])],
 		}))).toBe(true);
+		expect(isMemoryDetails(memoryDetails({ summaryMode: "incremental", renderedThroughId: "raw-1" }))).toBe(true);
+		expect(isMemoryDetails({ ...memoryDetails(), summaryMode: "unknown" })).toBe(false);
 	});
 
 	it("ignores old V2 observation entries and old V2 compaction details", () => {
