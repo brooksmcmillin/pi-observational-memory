@@ -20,6 +20,11 @@ export type TestObservation = {
 	relevance: "low" | "medium" | "high" | "critical";
 	sourceEntryIds: string[];
 	tokenCount: number;
+	workingState?: {
+		slot: "branch" | "worktree" | "pull_request" | "verification" | "decision" | "blocker" | "next_action";
+		key: string;
+		status: "active" | "resolved";
+	};
 };
 
 export type TestReflection = {
@@ -113,6 +118,8 @@ export function memoryDetails(
 		fullFold?: boolean;
 		observations?: TestObservation[];
 		reflections?: TestReflection[];
+		summaryMode?: "incremental";
+		renderedThroughId?: string;
 	} = {},
 ): unknown {
 	return {
@@ -121,6 +128,8 @@ export function memoryDetails(
 		fullFold: args.fullFold ?? false,
 		observations: args.observations ?? [],
 		reflections: args.reflections ?? [],
+		...(args.summaryMode ? { summaryMode: args.summaryMode } : {}),
+		...(args.renderedThroughId ? { renderedThroughId: args.renderedThroughId } : {}),
 	};
 }
 

@@ -38,7 +38,10 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 				firstKeptEntryId,
 				{ observationsPoolMaxTokens: observationsPoolMaxTokens(runtime) },
 			);
-			const summary = renderSummary(projection.reflections, projection.observations);
+			const summary = renderSummary(projection.reflections, projection.observations, {
+				workingState: projection.workingState,
+				hadPriorMemory: projection.hadPriorMemory,
+			});
 			if (summary.length === 0) {
 				// Decline ownership so Pi's native summarizer preserves the pre-cut context.
 				return;

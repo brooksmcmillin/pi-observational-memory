@@ -133,6 +133,34 @@ describe("V3 compaction hook", () => {
 		expect(result.compaction.details.reflections.map((ref: any) => ref.id)).toEqual(["eeeeeeeeeeee", "ffffffffffff"]);
 	});
 
+	it("omits previously rendered prose while carrying pinned working state", async () => {
+		const pinned = observation("aaaaaaaaaaaa", {
+			content: "Continue in the active worktree.",
+			workingState: { slot: "worktree", key: "current", status: "active" },
+		});
+		const old = observation("bbbbbbbbbbbb", { content: "Old unpinned detail." });
+		const fresh = observation("cccccccccccc", { content: "Fresh verification passed." });
+		const entries = [
+			textCustomMessage("raw-1", "one"),
+			observationsRecordedEntry("om-1", { observations: [pinned, old], coversUpToId: "raw-1" }),
+			compactionEntry("marked", { firstKeptEntryId: "raw-1", details: memoryDetails({
+				observations: [pinned, old], summaryMode: "incremental", renderedThroughId: "raw-1",
+			}) }),
+			textCustomMessage("raw-2", "two"),
+			observationsRecordedEntry("om-2", { observations: [fresh], coversUpToId: "raw-2" }),
+		];
+		const { run } = setup({ entries, observationsPoolMaxTokens: 100 });
+		const result = await run("raw-2") as any;
+
+		expect(result.compaction.summary).toContain("## Working state");
+		expect(result.compaction.summary).toContain("Continue in the active worktree.");
+		expect(result.compaction.summary).toContain("Fresh verification passed.");
+		expect(result.compaction.summary).not.toContain("Old unpinned detail.");
+		expect(result.compaction.details.observations.map((item: any) => item.id)).toEqual([
+			"aaaaaaaaaaaa", "cccccccccccc",
+		]);
+	});
+
 	it("delegates to native compaction when only old V2 memory exists", async () => {
 		const entries = [
 			textCustomMessage("raw-1", "aaaa"),

@@ -52,4 +52,22 @@ describe("session-ledger V3 summary rendering", () => {
 		expect(summary).not.toContain("legacy");
 		expect(summary).not.toContain("[object Object]");
 	});
+
+	it("renders pinned working state once before incremental records", () => {
+		const pinned = observation("aaaaaaaaaaaa", {
+			content: "Continue verification in the fork worktree.",
+			workingState: { slot: "next_action", key: "current", status: "active" },
+		});
+		const summary = renderSummary([], [pinned], {
+			workingState: [{ slot: "next_action", key: "current", observation: pinned }],
+		});
+		expect(summary).toContain("## Working state\n- next_action/current: Continue verification in the fork worktree. [aaaaaaaaaaaa]");
+		expect(summary).not.toContain("## Observations");
+		expect(summary).toContain("Older records remain in the branch ledger");
+	});
+
+	it("keeps extension ownership when prior memory exists but there is no delta", () => {
+		const summary = renderSummary([], [], { hadPriorMemory: true });
+		expect(summary).toContain("Older records remain in the branch ledger");
+	});
 });
