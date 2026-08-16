@@ -1,3 +1,4 @@
+import { registerApiProvider, unregisterApiProviders } from "@earendil-works/pi-ai/compat";
 import { describe, expect, it, vi } from "vitest";
 
 import { Runtime } from "../src/runtime.js";
@@ -36,6 +37,38 @@ describe("Runtime V3 behavior", () => {
 			"Observational memory: configured model anthropic/missing not found, using session model",
 			"warning",
 		);
+	});
+
+	it("rejects models whose custom API is unavailable to pi-ai workers", async () => {
+		const runtime = new Runtime();
+		const registry = modelRegistry();
+		const model = { provider: "claude-agent-sdk", id: "claude-sonnet-5", api: "claude-agent-sdk" };
+
+		await expect(runtime.resolveModel({ model, modelRegistry: registry, hasUI: false })).resolves.toEqual({
+			ok: false,
+			reason: 'model API "claude-agent-sdk" is not registered with pi-ai; configure observational-memory.model to use a supported provider/model',
+		});
+		expect(registry.getApiKeyAndHeaders).not.toHaveBeenCalled();
+	});
+
+	it("accepts models whose custom API is registered with pi-ai", async () => {
+		const runtime = new Runtime();
+		const registry = modelRegistry();
+		const sourceId = "observational-memory-runtime-test";
+		const api = "observational-memory-test-api" as Parameters<typeof registerApiProvider>[0]["api"];
+		registerApiProvider({ api, stream: vi.fn(), streamSimple: vi.fn() }, sourceId);
+
+		try {
+			const model = { provider: "custom-provider", id: "custom-model", api };
+			await expect(runtime.resolveModel({ model, modelRegistry: registry, hasUI: false })).resolves.toEqual({
+				ok: true,
+				model,
+				apiKey: "key",
+				headers: { test: "yes" },
+			});
+		} finally {
+			unregisterApiProviders(sourceId);
+		}
 	});
 
 	it("returns model resolution failures", async () => {
