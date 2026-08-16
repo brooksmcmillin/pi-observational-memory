@@ -1,3 +1,5 @@
+import { getApiProvider } from "@earendil-works/pi-ai/compat";
+
 import { type Config, DEFAULTS, loadConfig } from "./config.js";
 
 export type ResolveResult =
@@ -76,8 +78,15 @@ export class Runtime {
 			}
 		}
 		if (!model) return { ok: false, reason: "no model available (session has no model and no observational-memory model configured)" };
+		const { api, provider: modelProvider } = model as { api?: string; provider?: string };
+		if (api && !getApiProvider(api as Parameters<typeof getApiProvider>[0])) {
+			return {
+				ok: false,
+				reason: `model API "${api}" is not registered with pi-ai; configure observational-memory.model to use a supported provider/model`,
+			};
+		}
 		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-		const provider = (model as { provider?: string }).provider ?? "unknown";
+		const provider = modelProvider ?? "unknown";
 		if (!auth.ok || !hasUsableAuth(auth)) {
 			const isOAuth = ctx.modelRegistry.isUsingOAuth?.(model) === true;
 			const reason = isOAuth

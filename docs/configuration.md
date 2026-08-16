@@ -157,7 +157,7 @@ Set `model` when you want the observer, reflector, and dropper to use a cheaper 
 }
 ```
 
-`provider` and `id` must both be non-empty strings. `thinking` is optional. If the configured model cannot be resolved, the runtime attempts to fall back to the current session model and notifies once. Memory workers accept either an API key or OAuth-style auth headers (e.g. `Authorization: Bearer …`), so OAuth-authenticated providers work without an API key. If no usable model or credentials are available, the relevant background worker skips/fails safely rather than inventing memory.
+`provider` and `id` must both be non-empty strings. `thinking` is optional. If the configured model cannot be resolved, the runtime attempts to fall back to the current session model and notifies once. Memory workers accept either an API key or OAuth-style auth headers (e.g. `Authorization: Bearer …`), so OAuth-authenticated providers work without an API key. If the selected model uses a custom API that is not registered with `pi-ai`, or if no usable model or credentials are available, the relevant background worker skips safely rather than starting an unsupported stream. Configure `model` explicitly to a built-in Pi provider/model when the main session uses a legacy custom provider.
 
 ## `showWorkerNotifications`
 
