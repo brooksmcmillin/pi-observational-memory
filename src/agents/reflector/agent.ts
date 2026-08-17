@@ -1,4 +1,9 @@
-import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
+import {
+	agentLoop,
+	type AgentContext,
+	type AgentLoopConfig,
+	type AgentTool,
+} from "@earendil-works/pi-agent-core";
 import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
@@ -7,10 +12,15 @@ import { debugLog } from "../../debug-log.js";
 import { hashId } from "../../ids.js";
 import { logAgentStreamError } from "../stream-errors.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
+import type { StreamFn } from "../../runtime.js";
 import { truncateRecordContent } from "../../serialize.js";
 import { REFLECTOR_SYSTEM } from "./prompts.js";
 import { estimateStringTokens } from "../../tokens.js";
-import { reflectionToSummaryLine, type Observation, type Reflection } from "../../session-ledger/index.js";
+import {
+	reflectionToSummaryLine,
+	type Observation,
+	type Reflection,
+} from "../../session-ledger/index.js";
 import {
 	coverageTierForObservation,
 	reflectionCoverageMap,
@@ -28,6 +38,8 @@ interface RunReflectorArgs {
 	signal?: AbortSignal;
 	agentLoop?: typeof agentLoop;
 	maxTurns?: number;
+	/** Dispatch function for this model's API; defaults to pi-ai's compat streamSimple. */
+	streamFn?: StreamFn;
 	thinkingLevel?: ModelThinkingLevel;
 }
 
@@ -35,7 +47,9 @@ const RecordReflectionsSchema = Type.Object({
 	reflections: Type.Array(
 		Type.Object({
 			content: Type.String({ minLength: 1 }),
-			supportingObservationIds: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+			supportingObservationIds: Type.Array(Type.String({ minLength: 1 }), {
+				minItems: 1,
+			}),
 		}),
 		{ minItems: 1 },
 	),
@@ -63,12 +77,22 @@ export function summarizeSupportIdCounts(reflections: readonly Reflection[]): {
 	histogram: Record<string, number>;
 } {
 	if (reflections.length === 0) {
-		return { reflectionCount: 0, totalSupportIds: 0, minSupportIds: 0, maxSupportIds: 0, averageSupportIds: 0, histogram: {} };
+		return {
+			reflectionCount: 0,
+			totalSupportIds: 0,
+			minSupportIds: 0,
+			maxSupportIds: 0,
+			averageSupportIds: 0,
+			histogram: {},
+		};
 	}
-	const counts = reflections.map((reflection) => reflection.supportingObservationIds.length);
+	const counts = reflections.map(
+		(reflection) => reflection.supportingObservationIds.length,
+	);
 	const totalSupportIds = counts.reduce((sum, count) => sum + count, 0);
 	const histogram: Record<string, number> = {};
-	for (const count of counts) histogram[String(count)] = (histogram[String(count)] ?? 0) + 1;
+	for (const count of counts)
+		histogram[String(count)] = (histogram[String(count)] ?? 0) + 1;
 	return {
 		reflectionCount: reflections.length,
 		totalSupportIds,
@@ -83,10 +107,12 @@ export function normalizeSupportingObservationIds(
 	supportingObservationIds: readonly string[] | undefined,
 	allowedObservationIds: readonly string[],
 ): string[] | undefined {
-	if (!supportingObservationIds || supportingObservationIds.length === 0) return undefined;
+	if (!supportingObservationIds || supportingObservationIds.length === 0)
+		return undefined;
 	const allowedOrder = new Map<string, number>();
 	for (let i = 0; i < allowedObservationIds.length; i++) {
-		if (!allowedOrder.has(allowedObservationIds[i])) allowedOrder.set(allowedObservationIds[i], i);
+		if (!allowedOrder.has(allowedObservationIds[i]))
+			allowedOrder.set(allowedObservationIds[i], i);
 	}
 
 	const seen = new Set<string>();
@@ -95,7 +121,9 @@ export function normalizeSupportingObservationIds(
 		seen.add(id);
 	}
 	if (seen.size === 0) return undefined;
-	return Array.from(seen).sort((a, b) => (allowedOrder.get(a) ?? 0) - (allowedOrder.get(b) ?? 0));
+	return Array.from(seen).sort(
+		(a, b) => (allowedOrder.get(a) ?? 0) - (allowedOrder.get(b) ?? 0),
+	);
 }
 
 function normalizeReflectionContent(content: string): string | undefined {
@@ -104,7 +132,9 @@ function normalizeReflectionContent(content: string): string | undefined {
 	return normalized;
 }
 
-export async function runReflector(args: RunReflectorArgs): Promise<Reflection[] | undefined> {
+export async function runReflector(
+	args: RunReflectorArgs,
+): Promise<Reflection[] | undefined> {
 	const { model, apiKey, headers, reflections, observations, signal } = args;
 	if (observations.length === 0) return undefined;
 
@@ -112,11 +142,18 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 	debugLog("reflector.agent_start", {
 		activeObservationCount: observations.length,
 		reflectionCount: reflections.length,
-		coverageSummaryByRelevance: summarizeCoverageByRelevance(observations, coverageById),
+		coverageSummaryByRelevance: summarizeCoverageByRelevance(
+			observations,
+			coverageById,
+		),
 	});
 
-	const allowedObservationIds = observations.map((observation) => observation.id);
-	const existingReflectionIds = new Set(reflections.map((reflection) => reflection.id));
+	const allowedObservationIds = observations.map(
+		(observation) => observation.id,
+	);
+	const existingReflectionIds = new Set(
+		reflections.map((reflection) => reflection.id),
+	);
 	const accumulated = new Map<string, Reflection>();
 	let toolCallCount = 0;
 	let rawProposedReflectionCount = 0;
@@ -127,7 +164,8 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 	const recordReflections: AgentTool<typeof RecordReflectionsSchema> = {
 		name: "record_reflections",
 		label: "Record reflections",
-		description: "Record new durable reflections with supporting observation ids.",
+		description:
+			"Record new durable reflections with supporting observation ids.",
 		parameters: RecordReflectionsSchema,
 		execute: async (_id, params: RecordReflectionsArgs) => {
 			toolCallCount++;
@@ -137,7 +175,10 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 			let rejected = 0;
 			for (const proposal of params.reflections) {
 				const content = normalizeReflectionContent(proposal.content);
-				const supportingObservationIds = normalizeSupportingObservationIds(proposal.supportingObservationIds, allowedObservationIds);
+				const supportingObservationIds = normalizeSupportingObservationIds(
+					proposal.supportingObservationIds,
+					allowedObservationIds,
+				);
 				if (!content || !supportingObservationIds) {
 					rejected++;
 					continue;
@@ -159,18 +200,34 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 			duplicateReflectionCount += duplicates;
 			rejectedReflectionCount += rejected;
 			return {
-				content: [{ type: "text", text: `Recorded ${added} reflection${added === 1 ? "" : "s"}; ${duplicates} duplicate${duplicates === 1 ? "" : "s"}; ${rejected} rejected. Total this run: ${accumulated.size}.` }],
+				content: [
+					{
+						type: "text",
+						text: `Recorded ${added} reflection${added === 1 ? "" : "s"}; ${duplicates} duplicate${duplicates === 1 ? "" : "s"}; ${rejected} rejected. Total this run: ${accumulated.size}.`,
+					},
+				],
 				details: { added, duplicates, rejected, total: accumulated.size },
 			};
 		},
 	};
 
 	const userText = `CURRENT REFLECTIONS:\n${joinOrEmpty(reflections.map(reflectionToSummaryLine))}\n\nCURRENT OBSERVATIONS:\n${joinOrEmpty(observations.map((observation) => observationToReflectorLine(observation, coverageTierForObservation(observation, coverageById))))}\n\nCrystallize any missing durable facts or patterns into new reflections. If nothing is stable enough, do not call the tool.`;
-	const prompts: Message[] = [{ role: "user", content: [{ type: "text", text: userText }], timestamp: Date.now() }];
-	const context: AgentContext = { systemPrompt: REFLECTOR_SYSTEM, messages: [], tools: [recordReflections as AgentTool<any>] };
+	const prompts: Message[] = [
+		{
+			role: "user",
+			content: [{ type: "text", text: userText }],
+			timestamp: Date.now(),
+		},
+	];
+	const context: AgentContext = {
+		systemPrompt: REFLECTOR_SYSTEM,
+		messages: [],
+		tools: [recordReflections as AgentTool<any>],
+	};
 	const reasoning = (model as { reasoning?: unknown }).reasoning;
 	const thinkingLevel = args.thinkingLevel ?? "low";
-	const effectiveMaxTurns = args.maxTurns && args.maxTurns > 0 ? args.maxTurns : undefined;
+	const effectiveMaxTurns =
+		args.maxTurns && args.maxTurns > 0 ? args.maxTurns : undefined;
 	let turnCount = 0;
 	const config: AgentLoopConfig = {
 		model,
@@ -180,27 +237,47 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",
 		...(reasoning && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
-		...(effectiveMaxTurns !== undefined ? { shouldStopAfterTurn: () => ++turnCount >= effectiveMaxTurns } : {}),
+		...(effectiveMaxTurns !== undefined
+			? { shouldStopAfterTurn: () => ++turnCount >= effectiveMaxTurns }
+			: {}),
 	};
 
 	const loop = args.agentLoop ?? agentLoop;
-	const stream = loop(prompts, context, config, signal, streamSimple);
+	const stream = loop(
+		prompts,
+		context,
+		config,
+		signal,
+		args.streamFn ?? streamSimple,
+	);
 	for await (const event of stream) {
 		// Tool execution collects records.
 		logAgentStreamError("reflector", event);
 	}
 	await stream.result();
 	const acceptedReflections = Array.from(accumulated.values());
-	const afterCoverageById = reflectionCoverageMap(observations, [...reflections, ...acceptedReflections]);
+	const afterCoverageById = reflectionCoverageMap(observations, [
+		...reflections,
+		...acceptedReflections,
+	]);
 	debugLog("reflector.result", {
-		reason: acceptedReflections.length > 0 ? "accepted_nonempty" : toolCallCount === 0 ? "no_tool_call" : "all_filtered",
+		reason:
+			acceptedReflections.length > 0
+				? "accepted_nonempty"
+				: toolCallCount === 0
+					? "no_tool_call"
+					: "all_filtered",
 		toolCallCount,
 		rawProposedReflectionCount,
 		acceptedReflectionCount,
 		duplicateReflectionCount,
 		rejectedReflectionCount,
 		acceptedSupportIdCounts: summarizeSupportIdCounts(acceptedReflections),
-		coverageTransitionsByRelevance: summarizeCoverageTransitionsByRelevance(observations, coverageById, afterCoverageById),
+		coverageTransitionsByRelevance: summarizeCoverageTransitionsByRelevance(
+			observations,
+			coverageById,
+			afterCoverageById,
+		),
 	});
 	return acceptedReflections.length > 0 ? acceptedReflections : undefined;
 }

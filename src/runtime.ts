@@ -1,9 +1,20 @@
-import { getApiProvider } from "@earendil-works/pi-ai/compat";
+import {
+	getApiProvider,
+	streamSimple as compatStreamSimple,
+} from "@earendil-works/pi-ai/compat";
 
 import { type Config, DEFAULTS, loadConfig } from "./config.js";
 
+export type StreamFn = typeof compatStreamSimple;
+
 export type ResolveResult =
-	| { ok: true; model: unknown; apiKey?: string; headers?: Record<string, string> }
+	| {
+			ok: true;
+			model: unknown;
+			apiKey?: string;
+			headers?: Record<string, string>;
+			streamFn: StreamFn;
+	  }
 	| { ok: false; reason: string };
 
 /**
@@ -52,11 +63,13 @@ export class Runtime {
 	lastReflectorError: string | undefined;
 	lastDropperError: string | undefined;
 	/** Deliberate-empty backoff (#23): skip observer re-fires over the same span until enough new tokens arrive. */
-	observerEmptyBackoff: {
-		sessionIdentity: string | undefined;
-		coverageId: string | undefined;
-		tokensAtEmpty: number;
-	} | undefined;
+	observerEmptyBackoff:
+		| {
+				sessionIdentity: string | undefined;
+				coverageId: string | undefined;
+				tokensAtEmpty: number;
+		  }
+		| undefined;
 
 	ensureConfig(cwd: string): void {
 		if (this.configLoaded) return;
@@ -67,7 +80,10 @@ export class Runtime {
 	async resolveModel(ctx: ResolveCtx): Promise<ResolveResult> {
 		let model = ctx.model;
 		if (this.config.model) {
-			const configured = ctx.modelRegistry.find(this.config.model.provider, this.config.model.id);
+			const configured = ctx.modelRegistry.find(
+				this.config.model.provider,
+				this.config.model.id,
+			);
 			if (configured) {
 				model = configured;
 			} else if (ctx.hasUI && ctx.ui) {
@@ -77,16 +93,49 @@ export class Runtime {
 				);
 			}
 		}
-		if (!model) return { ok: false, reason: "no model available (session has no model and no observational-memory model configured)" };
-		const { api, provider: modelProvider } = model as { api?: string; provider?: string };
-		if (api && !getApiProvider(api as Parameters<typeof getApiProvider>[0])) {
+		if (!model)
 			return {
 				ok: false,
-				reason: `model API "${api}" is not registered with pi-ai; configure observational-memory.model to use a supported provider/model`,
+				reason:
+					"no model available (session has no model and no observational-memory model configured)",
 			};
+		const { api, provider: modelProvider } = model as {
+			api?: string;
+			provider?: string;
+		};
+		const provider = modelProvider ?? "unknown";
+		// A model's api may be registered globally with pi-ai (getApiProvider) or, for
+		// extension-provided APIs like claude-agent-sdk, only via the host's per-provider
+		// registry (ctx.modelRegistry.getProvider). Only consult the latter as a fallback:
+		// hosts that don't implement getProvider (e.g. minimal ModelRuntime stubs) must not
+		// break resolution for built-in pi-ai APIs that are already known.
+		const isBuiltinApi = api
+			? Boolean(getApiProvider(api as Parameters<typeof getApiProvider>[0]))
+			: true;
+		let extensionStreamFn: StreamFn | undefined;
+		if (api && !isBuiltinApi) {
+			const registeredProvider = ctx.modelRegistry.getProvider?.(provider);
+			extensionStreamFn =
+				registeredProvider &&
+				registeredProvider.streamSimple &&
+				(
+					registeredProvider as {
+						streamSimple?: unknown;
+						getModels?: () => { api?: string }[];
+					}
+				)
+					.getModels?.()
+					.some((candidate) => candidate.api === api)
+					? (registeredProvider.streamSimple as StreamFn)
+					: undefined;
+			if (!extensionStreamFn) {
+				return {
+					ok: false,
+					reason: `model API "${api}" is not registered with pi-ai; configure observational-memory.model to use a supported provider/model`,
+				};
+			}
 		}
 		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-		const provider = modelProvider ?? "unknown";
 		if (!auth.ok || !hasUsableAuth(auth)) {
 			const isOAuth = ctx.modelRegistry.isUsingOAuth?.(model) === true;
 			const reason = isOAuth
@@ -94,10 +143,19 @@ export class Runtime {
 				: `no API key or auth headers for provider "${provider}"`;
 			return { ok: false, reason };
 		}
-		return { ok: true, model, apiKey: auth.apiKey as string | undefined, headers: auth.headers as Record<string, string> | undefined };
+		return {
+			ok: true,
+			model,
+			apiKey: auth.apiKey as string | undefined,
+			headers: auth.headers as Record<string, string> | undefined,
+			streamFn: extensionStreamFn ?? compatStreamSimple,
+		};
 	}
 
-	launchConsolidationTask(ctx: LaunchCtx, work: () => Promise<void>): Promise<void> {
+	launchConsolidationTask(
+		ctx: LaunchCtx,
+		work: () => Promise<void>,
+	): Promise<void> {
 		this.consolidationInFlight = true;
 		this.consolidationPhase = undefined;
 		this.lastObserverError = undefined;
@@ -112,12 +170,20 @@ export class Runtime {
 		return promise;
 	}
 
-	recordConsolidationStageError(ctx: LaunchCtx, phase: ConsolidationPhase, error: unknown): string {
+	recordConsolidationStageError(
+		ctx: LaunchCtx,
+		phase: ConsolidationPhase,
+		error: unknown,
+	): string {
 		const message = error instanceof Error ? error.message : String(error);
 		if (phase === "observer") this.lastObserverError = message;
 		if (phase === "reflector") this.lastReflectorError = message;
 		if (phase === "dropper") this.lastDropperError = message;
-		if (ctx.hasUI && ctx.ui) ctx.ui.notify(`Observational memory: ${phase} failed: ${message}`, "warning");
+		if (ctx.hasUI && ctx.ui)
+			ctx.ui.notify(
+				`Observational memory: ${phase} failed: ${message}`,
+				"warning",
+			);
 		return message;
 	}
 
@@ -135,7 +201,11 @@ export class Runtime {
 				await work();
 			} catch (error) {
 				errorMessage = error instanceof Error ? error.message : String(error);
-				if (hasUI && ui) ui.notify(`Observational memory: ${label} failed: ${errorMessage}`, "warning");
+				if (hasUI && ui)
+					ui.notify(
+						`Observational memory: ${label} failed: ${errorMessage}`,
+						"warning",
+					);
 			} finally {
 				onFinally(errorMessage);
 			}

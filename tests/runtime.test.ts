@@ -1,12 +1,22 @@
-import { registerApiProvider, unregisterApiProviders } from "@earendil-works/pi-ai/compat";
+import {
+	registerApiProvider,
+	streamSimple as compatStreamSimple,
+	unregisterApiProviders,
+} from "@earendil-works/pi-ai/compat";
 import { describe, expect, it, vi } from "vitest";
 
 import { Runtime } from "../src/runtime.js";
 
-function modelRegistry(args: { found?: unknown; auth?: unknown } = {}) {
+function modelRegistry(
+	args: { found?: unknown; auth?: unknown; provider?: unknown } = {},
+) {
 	return {
 		find: vi.fn(() => args.found),
-		getApiKeyAndHeaders: vi.fn(async () => args.auth ?? { ok: true, apiKey: "key", headers: { test: "yes" } }),
+		getApiKeyAndHeaders: vi.fn(
+			async () =>
+				args.auth ?? { ok: true, apiKey: "key", headers: { test: "yes" } },
+		),
+		getProvider: vi.fn(() => args.provider),
 	};
 }
 
@@ -15,12 +25,25 @@ describe("Runtime V3 behavior", () => {
 		const runtime = new Runtime();
 		const configured = { provider: "anthropic", id: "configured" };
 		const registry = modelRegistry({ found: configured });
-		runtime.config = { ...runtime.config, model: { provider: "anthropic", id: "configured" } };
+		runtime.config = {
+			...runtime.config,
+			model: { provider: "anthropic", id: "configured" },
+		};
 
-		const result = await runtime.resolveModel({ model: { provider: "openai" }, modelRegistry: registry, hasUI: false });
+		const result = await runtime.resolveModel({
+			model: { provider: "openai" },
+			modelRegistry: registry,
+			hasUI: false,
+		});
 
 		expect(registry.find).toHaveBeenCalledWith("anthropic", "configured");
-		expect(result).toEqual({ ok: true, model: configured, apiKey: "key", headers: { test: "yes" } });
+		expect(result).toEqual({
+			ok: true,
+			model: configured,
+			apiKey: "key",
+			headers: { test: "yes" },
+			streamFn: compatStreamSimple,
+		});
 	});
 
 	it("falls back to session model and notifies when configured model is missing", async () => {
@@ -28,9 +51,17 @@ describe("Runtime V3 behavior", () => {
 		const notify = vi.fn();
 		const sessionModel = { provider: "openai" };
 		const registry = modelRegistry();
-		runtime.config = { ...runtime.config, model: { provider: "anthropic", id: "missing" } };
+		runtime.config = {
+			...runtime.config,
+			model: { provider: "anthropic", id: "missing" },
+		};
 
-		const result = await runtime.resolveModel({ model: sessionModel, modelRegistry: registry, hasUI: true, ui: { notify } });
+		const result = await runtime.resolveModel({
+			model: sessionModel,
+			modelRegistry: registry,
+			hasUI: true,
+			ui: { notify },
+		});
 
 		expect(result).toMatchObject({ ok: true, model: sessionModel });
 		expect(notify).toHaveBeenCalledWith(
@@ -42,11 +73,18 @@ describe("Runtime V3 behavior", () => {
 	it("rejects models whose custom API is unavailable to pi-ai workers", async () => {
 		const runtime = new Runtime();
 		const registry = modelRegistry();
-		const model = { provider: "claude-agent-sdk", id: "claude-sonnet-5", api: "claude-agent-sdk" };
+		const model = {
+			provider: "claude-agent-sdk",
+			id: "claude-sonnet-5",
+			api: "claude-agent-sdk",
+		};
 
-		await expect(runtime.resolveModel({ model, modelRegistry: registry, hasUI: false })).resolves.toEqual({
+		await expect(
+			runtime.resolveModel({ model, modelRegistry: registry, hasUI: false }),
+		).resolves.toEqual({
 			ok: false,
-			reason: 'model API "claude-agent-sdk" is not registered with pi-ai; configure observational-memory.model to use a supported provider/model',
+			reason:
+				'model API "claude-agent-sdk" is not registered with pi-ai; configure observational-memory.model to use a supported provider/model',
 		});
 		expect(registry.getApiKeyAndHeaders).not.toHaveBeenCalled();
 	});
@@ -55,31 +93,79 @@ describe("Runtime V3 behavior", () => {
 		const runtime = new Runtime();
 		const registry = modelRegistry();
 		const sourceId = "observational-memory-runtime-test";
-		const api = "observational-memory-test-api" as Parameters<typeof registerApiProvider>[0]["api"];
-		registerApiProvider({ api, stream: vi.fn(), streamSimple: vi.fn() }, sourceId);
+		const api = "observational-memory-test-api" as Parameters<
+			typeof registerApiProvider
+		>[0]["api"];
+		registerApiProvider(
+			{ api, stream: vi.fn(), streamSimple: vi.fn() },
+			sourceId,
+		);
 
 		try {
 			const model = { provider: "custom-provider", id: "custom-model", api };
-			await expect(runtime.resolveModel({ model, modelRegistry: registry, hasUI: false })).resolves.toEqual({
+			await expect(
+				runtime.resolveModel({ model, modelRegistry: registry, hasUI: false }),
+			).resolves.toEqual({
 				ok: true,
 				model,
 				apiKey: "key",
 				headers: { test: "yes" },
+				streamFn: compatStreamSimple,
 			});
 		} finally {
 			unregisterApiProviders(sourceId);
 		}
 	});
 
+	it("accepts models whose custom API is only registered via the host's extension provider registry", async () => {
+		const runtime = new Runtime();
+		const api = "claude-agent-sdk";
+		const extensionStreamSimple = vi.fn();
+		const registry = modelRegistry({
+			provider: {
+				streamSimple: extensionStreamSimple,
+				getModels: () => [{ id: "claude-sonnet-5", api }],
+			},
+		});
+		const model = { provider: "claude-agent-sdk", id: "claude-sonnet-5", api };
+
+		const result = await runtime.resolveModel({
+			model,
+			modelRegistry: registry,
+			hasUI: false,
+		});
+
+		expect(result).toEqual({
+			ok: true,
+			model,
+			apiKey: "key",
+			headers: { test: "yes" },
+			streamFn: extensionStreamSimple,
+		});
+	});
+
 	it("returns model resolution failures", async () => {
 		const runtime = new Runtime();
-		await expect(runtime.resolveModel({ model: undefined, modelRegistry: modelRegistry(), hasUI: false })).resolves.toEqual({
+		await expect(
+			runtime.resolveModel({
+				model: undefined,
+				modelRegistry: modelRegistry(),
+				hasUI: false,
+			}),
+		).resolves.toEqual({
 			ok: false,
-			reason: "no model available (session has no model and no observational-memory model configured)",
+			reason:
+				"no model available (session has no model and no observational-memory model configured)",
 		});
 
 		const registry = modelRegistry({ auth: { ok: false } });
-		await expect(runtime.resolveModel({ model: { provider: "anthropic" }, modelRegistry: registry, hasUI: false })).resolves.toEqual({
+		await expect(
+			runtime.resolveModel({
+				model: { provider: "anthropic" },
+				modelRegistry: registry,
+				hasUI: false,
+			}),
+		).resolves.toEqual({
 			ok: false,
 			reason: 'no API key or auth headers for provider "anthropic"',
 		});
@@ -89,16 +175,25 @@ describe("Runtime V3 behavior", () => {
 		const runtime = new Runtime();
 		const model = { provider: "kimi-coding", id: "kimi-for-coding" };
 		const registry = modelRegistry({
-			auth: { ok: true, apiKey: undefined, headers: { Authorization: "Bearer oauth-token" } },
+			auth: {
+				ok: true,
+				apiKey: undefined,
+				headers: { Authorization: "Bearer oauth-token" },
+			},
 		});
 
-		const result = await runtime.resolveModel({ model, modelRegistry: registry, hasUI: false });
+		const result = await runtime.resolveModel({
+			model,
+			modelRegistry: registry,
+			hasUI: false,
+		});
 
 		expect(result).toEqual({
 			ok: true,
 			model,
 			apiKey: undefined,
 			headers: { Authorization: "Bearer oauth-token" },
+			streamFn: compatStreamSimple,
 		});
 	});
 
@@ -107,9 +202,19 @@ describe("Runtime V3 behavior", () => {
 		const model = { provider: "anthropic", id: "claude" };
 		const registry = modelRegistry({ auth: { ok: true, apiKey: "sk-ant-key" } });
 
-		const result = await runtime.resolveModel({ model, modelRegistry: registry, hasUI: false });
+		const result = await runtime.resolveModel({
+			model,
+			modelRegistry: registry,
+			hasUI: false,
+		});
 
-		expect(result).toEqual({ ok: true, model, apiKey: "sk-ant-key", headers: undefined });
+		expect(result).toEqual({
+			ok: true,
+			model,
+			apiKey: "sk-ant-key",
+			headers: undefined,
+			streamFn: compatStreamSimple,
+		});
 	});
 
 	it("rejects auth that carries neither apiKey nor usable headers", async () => {
@@ -123,7 +228,9 @@ describe("Runtime V3 behavior", () => {
 			{ ok: true, headers: { Authorization: "" } },
 		]) {
 			const registry = modelRegistry({ auth });
-			await expect(runtime.resolveModel({ model, modelRegistry: registry, hasUI: false })).resolves.toEqual({
+			await expect(
+				runtime.resolveModel({ model, modelRegistry: registry, hasUI: false }),
+			).resolves.toEqual({
 				ok: false,
 				reason: 'no API key or auth headers for provider "xai"',
 			});
@@ -135,15 +242,23 @@ describe("Runtime V3 behavior", () => {
 		const model = { provider: "openai-codex", id: "gpt-5-codex" };
 		const registry = {
 			...modelRegistry({ auth: { ok: false, error: "refresh failed" } }),
-			isUsingOAuth: vi.fn((candidate: { provider?: string }) => candidate?.provider === "openai-codex"),
+			isUsingOAuth: vi.fn(
+				(candidate: { provider?: string }) =>
+					candidate?.provider === "openai-codex",
+			),
 		};
 
-		const result = await runtime.resolveModel({ model, modelRegistry: registry, hasUI: false });
+		const result = await runtime.resolveModel({
+			model,
+			modelRegistry: registry,
+			hasUI: false,
+		});
 
 		expect(registry.isUsingOAuth).toHaveBeenCalledWith(model);
 		expect(result).toEqual({
 			ok: false,
-			reason: 'authentication failed for provider "openai-codex" — OAuth credentials may have expired; run \'/login openai-codex\' to re-authenticate',
+			reason:
+				"authentication failed for provider \"openai-codex\" — OAuth credentials may have expired; run '/login openai-codex' to re-authenticate",
 		});
 	});
 
@@ -154,10 +269,13 @@ describe("Runtime V3 behavior", () => {
 			release = resolve;
 		});
 
-		const promise = runtime.launchConsolidationTask({ hasUI: false }, async () => {
-			runtime.consolidationPhase = "observer";
-			await work;
-		});
+		const promise = runtime.launchConsolidationTask(
+			{ hasUI: false },
+			async () => {
+				runtime.consolidationPhase = "observer";
+				await work;
+			},
+		);
 
 		expect(runtime.consolidationInFlight).toBe(true);
 		expect(runtime.consolidationPromise).toBe(promise);
@@ -173,16 +291,43 @@ describe("Runtime V3 behavior", () => {
 		const runtime = new Runtime();
 		const notify = vi.fn();
 
-		expect(runtime.recordConsolidationStageError({ hasUI: true, ui: { notify } }, "observer", new Error("observe failed"))).toBe("observe failed");
-		expect(runtime.recordConsolidationStageError({ hasUI: true, ui: { notify } }, "reflector", new Error("reflect failed"))).toBe("reflect failed");
-		expect(runtime.recordConsolidationStageError({ hasUI: true, ui: { notify } }, "dropper", "drop failed")).toBe("drop failed");
+		expect(
+			runtime.recordConsolidationStageError(
+				{ hasUI: true, ui: { notify } },
+				"observer",
+				new Error("observe failed"),
+			),
+		).toBe("observe failed");
+		expect(
+			runtime.recordConsolidationStageError(
+				{ hasUI: true, ui: { notify } },
+				"reflector",
+				new Error("reflect failed"),
+			),
+		).toBe("reflect failed");
+		expect(
+			runtime.recordConsolidationStageError(
+				{ hasUI: true, ui: { notify } },
+				"dropper",
+				"drop failed",
+			),
+		).toBe("drop failed");
 
 		expect(runtime.lastObserverError).toBe("observe failed");
 		expect(runtime.lastReflectorError).toBe("reflect failed");
 		expect(runtime.lastDropperError).toBe("drop failed");
-		expect(notify).toHaveBeenCalledWith("Observational memory: observer failed: observe failed", "warning");
-		expect(notify).toHaveBeenCalledWith("Observational memory: reflector failed: reflect failed", "warning");
-		expect(notify).toHaveBeenCalledWith("Observational memory: dropper failed: drop failed", "warning");
+		expect(notify).toHaveBeenCalledWith(
+			"Observational memory: observer failed: observe failed",
+			"warning",
+		);
+		expect(notify).toHaveBeenCalledWith(
+			"Observational memory: reflector failed: reflect failed",
+			"warning",
+		);
+		expect(notify).toHaveBeenCalledWith(
+			"Observational memory: dropper failed: drop failed",
+			"warning",
+		);
 	});
 
 	it("keeps compaction flags independent", () => {
