@@ -1,4 +1,9 @@
-import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
+import {
+	agentLoop,
+	type AgentContext,
+	type AgentLoopConfig,
+	type AgentTool,
+} from "@earendil-works/pi-agent-core";
 import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
@@ -6,9 +11,15 @@ import type { Static } from "typebox";
 import { hashId } from "../../ids.js";
 import { logAgentStreamError } from "../stream-errors.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
+import type { StreamFn } from "../../runtime.js";
 import { OBSERVER_SYSTEM } from "./prompts.js";
 import { nowTimestamp, truncateRecordContent } from "../../serialize.js";
-import { WORKING_STATE_SLOTS, type Observation, type Relevance, type WorkingStateAnnotation } from "../../session-ledger/index.js";
+import {
+	WORKING_STATE_SLOTS,
+	type Observation,
+	type Relevance,
+	type WorkingStateAnnotation,
+} from "../../session-ledger/index.js";
 import { observationLineTokenCount } from "../../tokens.js";
 
 interface RunObserverArgs {
@@ -24,6 +35,8 @@ interface RunObserverArgs {
 	agentLoop?: typeof agentLoop;
 	maxTurns?: number;
 	thinkingLevel?: ModelThinkingLevel;
+	/** Dispatch function for this model's API; defaults to pi-ai's compat streamSimple. */
+	streamFn?: StreamFn;
 }
 
 const RelevanceSchema = Type.Union([
@@ -38,7 +51,8 @@ const WorkingStateSchema = Type.Object({
 	status: Type.Union([Type.Literal("active"), Type.Literal("resolved")]),
 });
 
-export const OBSERVATION_TIMESTAMP_PATTERN = "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}$";
+export const OBSERVATION_TIMESTAMP_PATTERN =
+	"^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}$";
 
 const RecordObservationsSchema = Type.Object({
 	observations: Type.Array(
@@ -49,21 +63,22 @@ const RecordObservationsSchema = Type.Object({
 			}),
 			content: Type.String({
 				minLength: 1,
-				description: "Single-line plain prose. No markdown, no tags, no embedded timestamp.",
+				description:
+					"Single-line plain prose. No markdown, no tags, no embedded timestamp.",
 			}),
 			relevance: RelevanceSchema,
-				sourceEntryIds: Type.Array(
-				Type.String({ minLength: 1 }),
-				{
-					minItems: 1,
-					description:
-						"Exact source entry ids from the chunk that directly support this observation. " +
-						"Use only ids shown in '[Source entry id: ...]' labels; never invent ids.",
-				},
-				),
-				workingState: Type.Optional(WorkingStateSchema),
+			sourceEntryIds: Type.Array(Type.String({ minLength: 1 }), {
+				minItems: 1,
+				description:
+					"Exact source entry ids from the chunk that directly support this observation. " +
+					"Use only ids shown in '[Source entry id: ...]' labels; never invent ids.",
+			}),
+			workingState: Type.Optional(WorkingStateSchema),
 		}),
-		{ description: "Batch of new observations. May be empty only if the tool is not called at all." },
+		{
+			description:
+				"Batch of new observations. May be empty only if the tool is not called at all.",
+		},
 	),
 });
 
@@ -78,7 +93,9 @@ type RecordObservationsArgs = Static<typeof RecordObservationsSchema>;
 export class ObserverStreamError extends Error {
 	readonly stopReason: string;
 	constructor(stopReason: string, errorMessage?: string) {
-		super(`observer stream ended with stopReason "${stopReason}"${errorMessage ? `: ${errorMessage}` : ""}`);
+		super(
+			`observer stream ended with stopReason "${stopReason}"${errorMessage ? `: ${errorMessage}` : ""}`,
+		);
 		this.name = "ObserverStreamError";
 		this.stopReason = stopReason;
 	}
@@ -94,7 +111,8 @@ export function normalizeSourceEntryIds(
 ): string[] | undefined {
 	if (!sourceEntryIds || sourceEntryIds.length === 0) return undefined;
 	const allowedOrder = new Map<string, number>();
-	for (let i = 0; i < allowedSourceEntryIds.length; i++) allowedOrder.set(allowedSourceEntryIds[i], i);
+	for (let i = 0; i < allowedSourceEntryIds.length; i++)
+		allowedOrder.set(allowedSourceEntryIds[i], i);
 
 	const seen = new Set<string>();
 	for (const id of sourceEntryIds) {
@@ -102,11 +120,25 @@ export function normalizeSourceEntryIds(
 		seen.add(id);
 	}
 	if (seen.size === 0) return undefined;
-	return Array.from(seen).sort((a, b) => (allowedOrder.get(a) ?? 0) - (allowedOrder.get(b) ?? 0));
+	return Array.from(seen).sort(
+		(a, b) => (allowedOrder.get(a) ?? 0) - (allowedOrder.get(b) ?? 0),
+	);
 }
 
-export async function runObserver(args: RunObserverArgs): Promise<Observation[] | undefined> {
-	const { model, apiKey, headers, priorReflections, priorObservations, priorWorkingState = [], chunk, allowedSourceEntryIds, signal } = args;
+export async function runObserver(
+	args: RunObserverArgs,
+): Promise<Observation[] | undefined> {
+	const {
+		model,
+		apiKey,
+		headers,
+		priorReflections,
+		priorObservations,
+		priorWorkingState = [],
+		chunk,
+		allowedSourceEntryIds,
+		signal,
+	} = args;
 	const conversation = chunk.trim();
 	if (!conversation) return undefined;
 
@@ -125,7 +157,10 @@ export async function runObserver(args: RunObserverArgs): Promise<Observation[] 
 			let duplicates = 0;
 			let rejected = 0;
 			for (const obs of params.observations) {
-				const sourceEntryIds = normalizeSourceEntryIds(obs.sourceEntryIds, allowedSourceEntryIds);
+				const sourceEntryIds = normalizeSourceEntryIds(
+					obs.sourceEntryIds,
+					allowedSourceEntryIds,
+				);
 				if (!sourceEntryIds) {
 					rejected++;
 					continue;
@@ -148,20 +183,28 @@ export async function runObserver(args: RunObserverArgs): Promise<Observation[] 
 						relevance: obs.relevance,
 						content,
 					}),
-					...(obs.workingState ? { workingState: obs.workingState as WorkingStateAnnotation } : {}),
+					...(obs.workingState
+						? { workingState: obs.workingState as WorkingStateAnnotation }
+						: {}),
 				});
 				added++;
 			}
-			const rejectedPart = rejected > 0
-				? ` ${rejected} observation${rejected === 1 ? "" : "s"} rejected for missing or invalid sourceEntryIds.`
-				: "";
+			const rejectedPart =
+				rejected > 0
+					? ` ${rejected} observation${rejected === 1 ? "" : "s"} rejected for missing or invalid sourceEntryIds.`
+					: "";
 			const ack =
 				`Recorded ${added} new observation${added === 1 ? "" : "s"} ` +
-				(duplicates > 0 ? `(${duplicates} duplicate${duplicates === 1 ? "" : "s"} skipped).` : ".") +
+				(duplicates > 0
+					? `(${duplicates} duplicate${duplicates === 1 ? "" : "s"} skipped).`
+					: ".") +
 				rejectedPart +
 				` Total so far this run: ${accumulated.size}. ` +
 				`Continue if the chunk still has uncovered content; otherwise stop calling the tool and emit a short plain-text confirmation.`;
-			return { content: [{ type: "text", text: ack }], details: { added, duplicates, rejected, total: accumulated.size } };
+			return {
+				content: [{ type: "text", text: ack }],
+				details: { added, duplicates, rejected, total: accumulated.size },
+			};
 		},
 	};
 
@@ -198,7 +241,8 @@ ${conversation}`;
 
 	const reasoning = (model as { reasoning?: unknown }).reasoning;
 	const thinkingLevel = args.thinkingLevel ?? "low";
-	const effectiveMaxTurns = args.maxTurns && args.maxTurns > 0 ? args.maxTurns : undefined;
+	const effectiveMaxTurns =
+		args.maxTurns && args.maxTurns > 0 ? args.maxTurns : undefined;
 	let turnCount = 0;
 	const config: AgentLoopConfig = {
 		model,
@@ -210,31 +254,51 @@ ${conversation}`;
 		...(reasoning && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
 		...(effectiveMaxTurns !== undefined
 			? {
-				shouldStopAfterTurn: () => {
-					turnCount++;
-					return turnCount >= effectiveMaxTurns;
-				},
-			}
+					shouldStopAfterTurn: () => {
+						turnCount++;
+						return turnCount >= effectiveMaxTurns;
+					},
+				}
 			: {}),
 	};
 
 	const loop = args.agentLoop ?? agentLoop;
-	const stream = loop(prompts, context, config, signal, streamSimple);
+	const stream = loop(
+		prompts,
+		context,
+		config,
+		signal,
+		args.streamFn ?? streamSimple,
+	);
 	let streamError: { stopReason: string; errorMessage?: string } | undefined;
 	for await (const event of stream) {
 		// Drain events; the tool's execute already collects records.
 		logAgentStreamError("observer", event);
 		// Watch for a terminal API/stream failure so it is not conflated with
 		// a deliberate empty result.
-		const message = (event as { message?: { role?: string; stopReason?: string; errorMessage?: string } }).message;
-		if (message?.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted")) {
-			streamError = { stopReason: message.stopReason, errorMessage: message.errorMessage };
+		const message = (
+			event as {
+				message?: { role?: string; stopReason?: string; errorMessage?: string };
+			}
+		).message;
+		if (
+			message?.role === "assistant" &&
+			(message.stopReason === "error" || message.stopReason === "aborted")
+		) {
+			streamError = {
+				stopReason: message.stopReason,
+				errorMessage: message.errorMessage,
+			};
 		}
 	}
 	await stream.result();
 
 	if (accumulated.size === 0) {
-		if (streamError) throw new ObserverStreamError(streamError.stopReason, streamError.errorMessage);
+		if (streamError)
+			throw new ObserverStreamError(
+				streamError.stopReason,
+				streamError.errorMessage,
+			);
 		return undefined;
 	}
 	return Array.from(accumulated.values());
