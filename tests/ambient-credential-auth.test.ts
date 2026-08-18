@@ -169,3 +169,169 @@ describe("resolveModel with request-time-signed providers", () => {
 		}
 	});
 });
+
+/**
+ * Second half of pi's gate: a stale availability snapshot must not be fatal.
+ *
+ * pi never trusts the snapshot alone (agent-session.js:850-851):
+ *
+ *   hasConfiguredAuth(provider) || (await checkAuth(provider)) !== undefined
+ *
+ * `hasConfiguredAuth` reads `snapshot.configuredProviders`, which an availability pass
+ * fills. MEASURED against pi 0.84.2's real ModelRuntime on a live Bedrock/SSO host, using
+ * `ModelRuntime.create({ refreshOnCreate: false })` so the pass never populated it:
+ *
+ *   getApiKeyAndHeaders(model)   -> { ok: true, apiKey: undefined, headers: undefined }
+ *   hasConfiguredAuth(model)     -> FALSE        <- differs from the refreshed case
+ *   checkAuth("amazon-bedrock")  -> resolves     <- the credential genuinely works
+ *   refresh({ allowNetwork: false, providers: ["amazon-bedrock"] })  -> 1ms, then
+ *   hasConfiguredAuth(model)     -> true
+ *
+ * So the snapshot half alone rejects a provider pi itself would accept. This is reachable
+ * whenever the pass is skipped, aborted, or FAILS — e.g. an SSO token expired at startup
+ * and since renewed: pi recovers on its next turn, consolidation would stay dead for the
+ * whole session.
+ *
+ * VERSION SKEW, deliberately covered by two different doubles below. The facade's refresh
+ * differs across the pi versions this extension supports:
+ *   pi 0.84: `refresh(options)` -> `runtime.refresh(options)`      — honours the options
+ *   pi 0.81: `refresh()`        -> `runtime.reloadConfig()`        — ignores them, then
+ *            reloads models.json and runs a full, network-permitted availability pass
+ * The recovery must therefore work through either path, and must not depend on the abort
+ * signal being observed (0.81 never sees it), which is why the implementation races a
+ * timeout instead.
+ */
+describe("resolveModel with a stale availability snapshot", () => {
+	/**
+	 * The REAL facade over a runtime double, exposing both underlying entry points so the
+	 * test passes against either pi version's ModelRegistry.
+	 */
+	function staleSnapshotFacade(opts: { recovers: boolean }) {
+		const recoveries: string[] = [];
+		let configured = false;
+		const recover = (via: string) => {
+			recoveries.push(via);
+			if (opts.recovers) configured = true;
+			return { aborted: false, errors: new Map() };
+		};
+		const registry: any = new ModelRegistry({
+			getAuth: async () => ({ auth: {}, source: "AWS_PROFILE" }),
+			getCompatibilityRequestConfig: () => ({ headers: undefined, authHeader: false }),
+			hasConfiguredAuth: () => configured,
+			isUsingOAuth: () => false,
+			refresh: async () => recover("refresh"), // pi >= 0.84
+			reloadConfig: async () => recover("reloadConfig"), // pi 0.81
+		} as any);
+		return { registry, recoveries };
+	}
+
+	it("re-checks live and accepts when the snapshot was merely stale", async () => {
+		const runtime = new Runtime();
+		runtime.configLoaded = true;
+		const { registry, recoveries } = staleSnapshotFacade({ recovers: true });
+
+		const result = await runtime.resolveModel({ model: bedrockModel, modelRegistry: registry, hasUI: false });
+
+		expect(result.ok).toBe(true);
+		expect(recoveries).toHaveLength(1);
+	});
+
+	it("asks for a scoped, network-free re-check", async () => {
+		// Asserted against a plain registry double, because only pi >= 0.84 forwards these
+		// options at all — on 0.81 the facade drops them before the runtime sees them.
+		const runtime = new Runtime();
+		runtime.configLoaded = true;
+		const calls: unknown[] = [];
+		let configured = false;
+		const result = await runtime.resolveModel({
+			model: bedrockModel,
+			modelRegistry: {
+				find: () => undefined,
+				getApiKeyAndHeaders: async () => ({ ok: true }),
+				hasConfiguredAuth: () => configured,
+				isUsingOAuth: () => false,
+				refresh: async (options: unknown) => {
+					calls.push(options);
+					configured = true;
+				},
+			},
+			hasUI: false,
+		});
+
+		expect(result.ok).toBe(true);
+		expect(calls).toHaveLength(1);
+		expect(calls[0]).toMatchObject({ allowNetwork: false, providers: ["amazon-bedrock"] });
+	});
+
+	it("still rejects when the live re-check confirms the provider is unconfigured", async () => {
+		const runtime = new Runtime();
+		runtime.configLoaded = true;
+		const { registry, recoveries } = staleSnapshotFacade({ recovers: false });
+
+		const result = await runtime.resolveModel({ model: bedrockModel, modelRegistry: registry, hasUI: false });
+
+		expect(result.ok).toBe(false);
+		expect(recoveries).toHaveLength(1);
+	});
+
+	it("rate-limits the re-check so an unauthenticated host pays it once, not per consolidation", async () => {
+		const runtime = new Runtime();
+		runtime.configLoaded = true;
+		const { registry, recoveries } = staleSnapshotFacade({ recovers: false });
+
+		for (let i = 0; i < 3; i++) {
+			await runtime.resolveModel({ model: bedrockModel, modelRegistry: registry, hasUI: false });
+		}
+
+		expect(recoveries).toHaveLength(1);
+	});
+
+	it("does not re-check when auth is already usable", async () => {
+		const runtime = new Runtime();
+		runtime.configLoaded = true;
+		const { registry, recoveries } = staleSnapshotFacade({ recovers: true });
+		registry.getApiKeyAndHeaders = async () => ({ ok: true, apiKey: "sk-live" });
+
+		const result = await runtime.resolveModel({ model: bedrockModel, modelRegistry: registry, hasUI: false });
+
+		expect(result.ok).toBe(true);
+		expect(recoveries).toHaveLength(0);
+	});
+
+	it("does not re-check OAuth providers — an empty resolution there means expired", async () => {
+		const runtime = new Runtime();
+		runtime.configLoaded = true;
+		const { registry, recoveries } = staleSnapshotFacade({ recovers: true });
+		registry.isUsingOAuth = () => true;
+
+		const result = await runtime.resolveModel({ model: bedrockModel, modelRegistry: registry, hasUI: false });
+
+		expect(result.ok).toBe(false);
+		expect(recoveries).toHaveLength(0);
+	});
+
+	it("survives a registry with no refresh(), and a refresh that throws", async () => {
+		const runtime = new Runtime();
+		runtime.configLoaded = true;
+
+		const noRefresh = {
+			find: () => undefined,
+			getApiKeyAndHeaders: async () => ({ ok: true }),
+			hasConfiguredAuth: () => false,
+			isUsingOAuth: () => false,
+		};
+		await expect(
+			runtime.resolveModel({ model: bedrockModel, modelRegistry: noRefresh, hasUI: false }),
+		).resolves.toMatchObject({ ok: false });
+
+		const throwing = {
+			...noRefresh,
+			refresh: async () => {
+				throw new Error("availability refresh failed");
+			},
+		};
+		await expect(
+			runtime.resolveModel({ model: bedrockModel, modelRegistry: throwing, hasUI: false }),
+		).resolves.toMatchObject({ ok: false });
+	});
+});

@@ -35,6 +35,19 @@ function countUsableHeaders(headers: unknown): number {
 	).length;
 }
 
+/**
+ * How long to wait for the availability re-check in `recheckProviderCredential`, and how
+ * long before the same provider may be re-checked again.
+ *
+ * The re-check is network-free and measured at ~1ms on a warm Bedrock/SSO host, but
+ * `checkAuth` can block on a provider's own credential resolution, so it is bounded. The
+ * re-arm interval keeps an unauthenticated host from paying the cost on every
+ * consolidation while still recovering within a session when credentials are renewed out
+ * of band (`aws sso login` in another terminal, `gcloud auth application-default login`).
+ */
+const AVAILABILITY_RECHECK_TIMEOUT_MS = 5_000;
+const AVAILABILITY_RECHECK_REARM_MS = 60_000;
+
 type NotifyLevel = "warning" | "info" | "error";
 type Notify = (message: string, type?: NotifyLevel) => void;
 export type ConsolidationPhase = "observer" | "reflector" | "dropper";
@@ -95,6 +108,8 @@ export class Runtime {
 	lastObserverError: string | undefined;
 	lastReflectorError: string | undefined;
 	lastDropperError: string | undefined;
+	/** provider -> epoch ms of the last availability re-check (see `recheckProviderCredential`). */
+	availabilityRecheckedAt = new Map<string, number>();
 	/** Deliberate-empty backoff (#23): skip observer re-fires over the same span until enough new tokens arrive. */
 	observerEmptyBackoff: {
 		sessionIdentity: string | undefined;
@@ -146,7 +161,28 @@ export class Runtime {
 		// credential source for at all, which is simply unauthenticated.
 		const usable = hasUsableAuth(auth);
 		const resolvedEmptyApiKey = typeof auth.apiKey === "string" && auth.apiKey.length === 0;
-		const providerCredentialConfigured = hasConfiguredProviderCredential(ctx.modelRegistry, model);
+		let providerCredentialConfigured = hasConfiguredProviderCredential(ctx.modelRegistry, model);
+		// pi's gate has TWO halves and never trusts the snapshot alone (agent-session.js):
+		//
+		//   hasConfiguredAuth(provider) || (await checkAuth(provider)) !== undefined
+		//
+		// `hasConfiguredAuth` reads `snapshot.configuredProviders`, which is populated by an
+		// availability pass — and left untouched when that pass is skipped
+		// (`refreshOnCreate: false`), aborted, or FAILS (its catch records `availabilityError`
+		// and returns). A provider whose credential could not be checked at startup — an
+		// expired SSO token, say — is therefore absent from the snapshot for the rest of the
+		// session, even after the user renews it out of band. pi recovers on the next turn
+		// because its second half re-checks live; reading only the snapshot half would leave
+		// consolidation dead for the whole session, which is the same silent-failure class as
+		// the bug this gate was fixed for.
+		//
+		// The facade exposes no `checkAuth`, but `refresh({ providers })` performs the same
+		// live check and then updates the snapshot, so re-reading afterwards is equivalent.
+		// Only attempted when everything else already looks like the ambient shape, so an
+		// ordinary unauthenticated provider still fails on the first call.
+		if (auth.ok === true && !usable && !isOAuth && !resolvedEmptyApiKey && !providerCredentialConfigured) {
+			providerCredentialConfigured = await this.recheckProviderCredential(ctx.modelRegistry, model, provider);
+		}
 		const signsAtRequestTime =
 			auth.ok === true && !isOAuth && !resolvedEmptyApiKey && providerCredentialConfigured;
 		if (!auth.ok || (!usable && !signsAtRequestTime)) {
@@ -176,6 +212,67 @@ export class Runtime {
 			debugLog("resolve.request_time_signing", { provider, providerCredentialConfigured });
 		}
 		return { ok: true, model, apiKey: auth.apiKey as string | undefined, headers: auth.headers as Record<string, string> | undefined };
+	}
+
+	/**
+	 * Re-check one provider's credential live, then re-read pi's snapshot.
+	 *
+	 * Implements the second half of pi's own auth gate for the only case that needs it: an
+	 * otherwise-ambient-looking resolution whose provider is missing from a stale or never
+	 * populated availability snapshot. Bounded and rate-limited; never throws.
+	 */
+	private async recheckProviderCredential(registry: unknown, model: unknown, provider: string): Promise<boolean> {
+		const last = this.availabilityRecheckedAt.get(provider);
+		const now = Date.now();
+		if (last !== undefined && now - last < AVAILABILITY_RECHECK_REARM_MS) return false;
+		this.availabilityRecheckedAt.set(provider, now);
+
+		const refresh = (registry as { refresh?: (options?: unknown) => Promise<unknown> }).refresh;
+		if (typeof refresh !== "function") {
+			debugLog("resolve.availability_recheck", { provider, refreshed: false, reason: "registry exposes no refresh()" });
+			return false;
+		}
+
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), AVAILABILITY_RECHECK_TIMEOUT_MS);
+		let refreshError: string | undefined;
+		let timedOut = false;
+		try {
+			// allowNetwork:false — a credential re-check must not wait on a model-catalog fetch.
+			// providers:[provider] — scope the work, and the snapshot writes, to the one provider.
+			//
+			// Both are honoured from pi 0.84; on pi 0.81 the facade is `refresh()` with no
+			// parameters, delegating to `runtime.reloadConfig()`, which reloads models.json and
+			// then runs a FULL, network-permitted availability pass. Passing the options is
+			// harmless there, but the work is wider and slower — hence the race below rather
+			// than relying on the abort signal, which that version never sees.
+			await Promise.race([
+				refresh.call(registry, { allowNetwork: false, providers: [provider], signal: controller.signal }),
+				new Promise<void>((resolve) => {
+					controller.signal.addEventListener("abort", () => {
+						timedOut = true;
+						resolve();
+					});
+				}),
+			]);
+		} catch (error) {
+			refreshError = error instanceof Error ? error.message : String(error);
+		} finally {
+			clearTimeout(timer);
+		}
+
+		// Re-read even when the refresh reported an error or timed out: a scoped pass can
+		// update the snapshot for this provider and still fail elsewhere.
+		const recovered = hasConfiguredProviderCredential(registry, model);
+		debugLog("resolve.availability_recheck", {
+			provider,
+			refreshed: refreshError === undefined && !timedOut,
+			recovered,
+			elapsedMs: Date.now() - now,
+			timedOut,
+			...(refreshError === undefined ? {} : { refreshError }),
+		});
+		return recovered;
 	}
 
 	launchConsolidationTask(ctx: LaunchCtx, work: () => Promise<void>): Promise<void> {
