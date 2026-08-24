@@ -55,6 +55,7 @@ interface RunDropperArgs {
 	model: Model<any>;
 	apiKey?: string;
 	headers?: Record<string, string>;
+	env?: Record<string, string>;
 	reflections: Reflection[];
 	observations: Observation[];
 	targetTokens: number;
@@ -174,6 +175,7 @@ export async function runDropper(
 		model,
 		apiKey,
 		headers,
+		env,
 		reflections,
 		observations,
 		targetTokens,
@@ -321,6 +323,7 @@ export async function runDropper(
 		model,
 		apiKey,
 		headers,
+		env,
 		maxTokens: boundedMaxTokens(model, AGENT_LOOP_MAX_TOKENS),
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",

@@ -304,11 +304,11 @@ async function runObserverStage(
 	const entries = ctx.sessionManager.getBranch() as Entry[];
 	const currentTokens = realContextTokens(ctx);
 	const real =
-		currentTokens !== undefined
-			? realTokensSinceAnchor(entries, OM_OBSERVATIONS_RECORDED, currentTokens)
-			: undefined;
+		currentTokens === undefined
+			? undefined
+			: realTokensSinceAnchor(entries, OM_OBSERVATIONS_RECORDED, currentTokens);
 	const tokens =
-		real !== undefined ? real : rawTokensSinceObservationCoverage(entries); // fallback: no usage baseline / basis change
+		real === undefined ? rawTokensSinceObservationCoverage(entries) : real; // fallback: no usage baseline / basis change
 	if (tokens < runtime.config.observeAfterTokens) return "continue";
 
 	const sessionMetadata = debugSessionMetadata(ctx);
@@ -411,6 +411,7 @@ async function runObserverStage(
 			apiKey: resolved.apiKey,
 			headers: resolved.headers,
 			streamFn: resolved.streamFn,
+			env: resolved.env,
 			priorReflections,
 			priorObservations,
 			priorWorkingState,
@@ -475,11 +476,11 @@ async function runReflectorStage(
 	const entries = ctx.sessionManager.getBranch() as Entry[];
 	const currentTokens = realContextTokens(ctx);
 	const real =
-		currentTokens !== undefined
-			? realTokensSinceAnchor(entries, OM_REFLECTIONS_RECORDED, currentTokens)
-			: undefined;
+		currentTokens === undefined
+			? undefined
+			: realTokensSinceAnchor(entries, OM_REFLECTIONS_RECORDED, currentTokens);
 	const reflectionTokens =
-		real !== undefined ? real : rawTokensSinceReflectionCoverage(entries); // fallback: no usage baseline / basis change
+		real === undefined ? rawTokensSinceReflectionCoverage(entries) : real; // fallback: no usage baseline / basis change
 	if (reflectionTokens < runtime.config.reflectAfterTokens)
 		return { outcome: "continue", sameRunReflections: [] };
 
@@ -504,6 +505,7 @@ async function runReflectorStage(
 		apiKey: resolved.apiKey,
 		headers: resolved.headers,
 		streamFn: resolved.streamFn,
+		env: resolved.env,
 		reflections: folded.reflections,
 		observations: folded.activeObservations,
 		maxTurns: runtime.config.agentMaxTurns,
@@ -589,6 +591,7 @@ async function runDropperStage(
 		apiKey: resolved.apiKey,
 		headers: resolved.headers,
 		streamFn: resolved.streamFn,
+		env: resolved.env,
 		reflections: reflectionsForDropper,
 		observations: folded.activeObservations,
 		targetTokens: runtime.config.observationsPoolTargetTokens,

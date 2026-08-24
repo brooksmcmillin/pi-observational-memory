@@ -26,6 +26,7 @@ interface RunObserverArgs {
 	model: Model<any>;
 	apiKey?: string;
 	headers?: Record<string, string>;
+	env?: Record<string, string>;
 	priorReflections: string[];
 	priorObservations: string[];
 	priorWorkingState?: string[];
@@ -132,6 +133,7 @@ export async function runObserver(
 		model,
 		apiKey,
 		headers,
+		env,
 		priorReflections,
 		priorObservations,
 		priorWorkingState = [],
@@ -248,6 +250,7 @@ ${conversation}`;
 		model,
 		apiKey,
 		headers,
+		env,
 		maxTokens: boundedMaxTokens(model, AGENT_LOOP_MAX_TOKENS),
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",
