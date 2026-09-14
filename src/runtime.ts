@@ -3,6 +3,8 @@ import {
 	streamSimple as compatStreamSimple,
 } from "@earendil-works/pi-ai/compat";
 
+import type { Model } from "@earendil-works/pi-ai";
+import { resolveWorkerStreamSimple } from "./agents/worker-stream.js";
 import { type Config, DEFAULTS, loadConfig } from "./config.js";
 import { debugLog } from "./debug-log.js";
 
@@ -167,16 +169,14 @@ export class Runtime {
 			provider?: string;
 		};
 		const provider = modelProvider ?? "unknown";
-		// A model's api may be registered globally with pi-ai (getApiProvider) or, for
-		// extension-provided APIs like claude-agent-sdk, only via the host's per-provider
-		// registry (ctx.modelRegistry.getProvider). Only consult the latter as a fallback:
-		// hosts that don't implement getProvider (e.g. minimal ModelRuntime stubs) must not
-		// break resolution for built-in pi-ai APIs that are already known.
+		// Prefer the host-composed dispatcher; older hosts may expose only getProvider.
+		const workerStreamFn = resolveWorkerStreamSimple(model as Model<any>, ctx.modelRegistry);
 		const isBuiltinApi = api
 			? Boolean(getApiProvider(api as Parameters<typeof getApiProvider>[0]))
 			: true;
-		let extensionStreamFn: StreamFn | undefined;
-		if (api && !isBuiltinApi) {
+		let extensionStreamFn: StreamFn | undefined =
+			workerStreamFn !== compatStreamSimple ? workerStreamFn : undefined;
+		if (api && !isBuiltinApi && !extensionStreamFn) {
 			const registeredProvider = ctx.modelRegistry.getProvider?.(provider);
 			extensionStreamFn =
 				registeredProvider &&
@@ -272,9 +272,12 @@ export class Runtime {
 				providerCredentialConfigured,
 			});
 		}
+		// Match pi's request model: OAuth may route to an account-specific endpoint
+		// (e.g. Copilot Business). Do not mutate the shared session/registry model.
+		const requestModel = auth.baseUrl ? { ...(model as object), baseUrl: auth.baseUrl } : model;
 		return {
 			ok: true,
-			model,
+			model: requestModel,
 			apiKey: auth.apiKey as string | undefined,
 			headers: auth.headers as Record<string, string> | undefined,
 			env: auth.env as Record<string, string> | undefined,
