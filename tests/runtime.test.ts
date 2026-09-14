@@ -144,6 +144,39 @@ describe("Runtime V3 behavior", () => {
 		});
 	});
 
+	it.each(["custom-worker-api", "openai-completions"])(
+		"prefers host-composed dispatch for %s",
+		async (api) => {
+			const runtime = new Runtime();
+			const streamSimple = vi.fn();
+			const registry = { ...modelRegistry(), streamSimple };
+			const model = { provider: "custom-provider", id: "custom-model", api };
+			const result = await runtime.resolveModel({ model, modelRegistry: registry, hasUI: false });
+
+			expect(result.ok).toBe(true);
+			if (!result.ok) throw new Error(result.reason);
+			const context = { messages: [] };
+			result.streamFn(result.model as any, context, { apiKey: result.apiKey });
+			expect(streamSimple).toHaveBeenCalledWith(model, context, { apiKey: "key" });
+			expect(registry.getProvider).not.toHaveBeenCalled();
+		},
+	);
+
+	it("accepts custom APIs registered through provider configs", async () => {
+		const runtime = new Runtime();
+		const streamSimple = vi.fn();
+		const model = { provider: "custom-provider", id: "custom-model", api: "custom-worker-api" };
+		const registry = {
+			...modelRegistry(),
+			getRegisteredProviderIds: () => ["extension"],
+			getRegisteredProviderConfig: () => ({ api: model.api, streamSimple }),
+		};
+		const result = await runtime.resolveModel({ model, modelRegistry: registry, hasUI: false });
+
+		expect(result).toMatchObject({ ok: true, streamFn: streamSimple });
+		expect(registry.getProvider).not.toHaveBeenCalled();
+	});
+
 	it("returns model resolution failures", async () => {
 		const runtime = new Runtime();
 		await expect(
@@ -215,6 +248,47 @@ describe("Runtime V3 behavior", () => {
 			headers: undefined,
 			streamFn: compatStreamSimple,
 		});
+	});
+
+	it.each([
+		{ configured: false, headersOnly: false },
+		{ configured: true, headersOnly: false },
+		{ configured: false, headersOnly: true },
+		{ configured: true, headersOnly: true },
+	])("applies auth baseUrl without mutating the model (configured=$configured, headersOnly=$headersOnly)", async ({ configured, headersOnly }) => {
+		const runtime = new Runtime();
+		const model = Object.freeze({
+			provider: "github-copilot",
+			id: "gpt-4.1",
+			baseUrl: "https://api.individual.githubcopilot.com",
+			api: "openai-completions",
+			contextWindow: 128000,
+		});
+		const baseUrl = "https://api.business.githubcopilot.com";
+		const apiKey = headersOnly ? undefined : "test-key";
+		const headers = { Authorization: "Bearer test-token" };
+		const registry = modelRegistry({ found: model, auth: { ok: true, apiKey, headers, baseUrl } });
+		const sessionModel = configured ? { provider: "openai", id: "session-model" } : model;
+		if (configured) runtime.config = { ...runtime.config, model: { provider: model.provider, id: model.id } };
+
+		const result = await runtime.resolveModel({ model: sessionModel, modelRegistry: registry, hasUI: false });
+
+		expect(registry.getApiKeyAndHeaders).toHaveBeenCalledWith(model);
+		expect(result).toMatchObject({ ok: true, model: { ...model, baseUrl }, apiKey, headers });
+		if (!result.ok) throw new Error("model resolution failed");
+		expect(result.model).not.toBe(model);
+		expect(model.baseUrl).toBe("https://api.individual.githubcopilot.com");
+	});
+
+	it.each([undefined, ""])("keeps the original model when auth baseUrl is %j", async (baseUrl) => {
+		const runtime = new Runtime();
+		const model = Object.freeze({ provider: "openai", id: "test-model", baseUrl: "https://example.com/v1" });
+		const registry = modelRegistry({ auth: { ok: true, apiKey: "test-key", baseUrl } });
+
+		const result = await runtime.resolveModel({ model, modelRegistry: registry, hasUI: false });
+
+		if (!result.ok) throw new Error("model resolution failed");
+		expect(result.model).toBe(model);
 	});
 
 	it("rejects auth that carries neither apiKey nor usable headers", async () => {
@@ -363,7 +437,7 @@ describe("Runtime V3 behavior", () => {
 
 		expect(result).toEqual({
 			ok: true,
-			model,
+			model: { ...model, baseUrl: "https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1" },
 			apiKey: "test-key",
 			headers: { Authorization: "Bearer test" },
 			env: { CLOUDFLARE_ACCOUNT_ID: "abc123" },

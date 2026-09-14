@@ -6,11 +6,11 @@ import {
 } from "@earendil-works/pi-agent-core";
 import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
-import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { Static } from "typebox";
 import { debugLog } from "../../debug-log.js";
 import { hashId } from "../../ids.js";
 import { logAgentStreamError } from "../stream-errors.js";
+import { resolveWorkerStreamSimple, type StreamableModelRegistry, type WorkerStreamSimple } from "../worker-stream.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
 import type { StreamFn } from "../../runtime.js";
 import { truncateRecordContent } from "../../serialize.js";
@@ -39,9 +39,13 @@ interface RunReflectorArgs {
 	signal?: AbortSignal;
 	agentLoop?: typeof agentLoop;
 	maxTurns?: number;
-	/** Dispatch function for this model's API; defaults to pi-ai's compat streamSimple. */
+	/** Legacy explicit dispatch override. */
 	streamFn?: StreamFn;
+	/** Maximum output tokens for the loop (defaults to {@link AGENT_LOOP_MAX_TOKENS}). */
+	maxOutputTokens?: number;
 	thinkingLevel?: ModelThinkingLevel;
+	modelRegistry?: StreamableModelRegistry;
+	streamSimple?: WorkerStreamSimple;
 }
 
 const RecordReflectionsSchema = Type.Object({
@@ -236,7 +240,7 @@ export async function runReflector(
 		apiKey,
 		headers,
 		env,
-		maxTokens: boundedMaxTokens(model, AGENT_LOOP_MAX_TOKENS),
+		maxTokens: boundedMaxTokens(model, args.maxOutputTokens ?? AGENT_LOOP_MAX_TOKENS),
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",
 		...(reasoning && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
@@ -251,7 +255,7 @@ export async function runReflector(
 		context,
 		config,
 		signal,
-		args.streamFn ?? streamSimple,
+		resolveWorkerStreamSimple(model, args.modelRegistry, args.streamSimple ?? args.streamFn),
 	);
 	for await (const event of stream) {
 		// Tool execution collects records.

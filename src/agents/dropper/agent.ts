@@ -6,12 +6,12 @@ import {
 } from "@earendil-works/pi-agent-core";
 import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
-import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { Static } from "typebox";
 import { debugLog } from "../../debug-log.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
 import type { StreamFn } from "../../runtime.js";
 import { logAgentStreamError } from "../stream-errors.js";
+import { resolveWorkerStreamSimple, type StreamableModelRegistry, type WorkerStreamSimple } from "../worker-stream.js";
 import {
 	reflectionToSummaryLine,
 	type Observation,
@@ -62,9 +62,13 @@ interface RunDropperArgs {
 	signal?: AbortSignal;
 	agentLoop?: typeof agentLoop;
 	maxTurns?: number;
+	/** Maximum output tokens for the loop (defaults to {@link AGENT_LOOP_MAX_TOKENS}). */
+	maxOutputTokens?: number;
 	thinkingLevel?: ModelThinkingLevel;
-	/** Dispatch function for this model's API; defaults to pi-ai's compat streamSimple. */
+	/** Legacy explicit dispatch override. */
 	streamFn?: StreamFn;
+	modelRegistry?: StreamableModelRegistry;
+	streamSimple?: WorkerStreamSimple;
 }
 
 const RELEVANCE_DROP_RANK: Record<Observation["relevance"], number> = {
@@ -324,7 +328,7 @@ export async function runDropper(
 		apiKey,
 		headers,
 		env,
-		maxTokens: boundedMaxTokens(model, AGENT_LOOP_MAX_TOKENS),
+		maxTokens: boundedMaxTokens(model, args.maxOutputTokens ?? AGENT_LOOP_MAX_TOKENS),
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",
 		...(reasoning && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
@@ -339,7 +343,7 @@ export async function runDropper(
 		context,
 		config,
 		signal,
-		args.streamFn ?? streamSimple,
+		resolveWorkerStreamSimple(model, args.modelRegistry, args.streamSimple ?? args.streamFn),
 	);
 	for await (const event of stream) {
 		// Tool execution collects candidate ids.
