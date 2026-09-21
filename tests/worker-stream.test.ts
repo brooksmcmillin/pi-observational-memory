@@ -27,6 +27,24 @@ describe("resolveWorkerStreamSimple", () => {
 		expect(customStream).toHaveBeenCalledWith(model, context, undefined);
 	});
 
+	it("preserves the registry receiver when streaming through its runtime", () => {
+		const stream = {} as ReturnType<WorkerStreamSimple>;
+		class Registry {
+			runtime = { streamSimple: vi.fn<WorkerStreamSimple>(() => stream) };
+
+			streamSimple(...args: Parameters<WorkerStreamSimple>) {
+				return this.runtime.streamSimple(...args);
+			}
+		}
+		const registry = new Registry();
+		const resolved = resolveWorkerStreamSimple(customApiModel, registry);
+		const context = { messages: [] };
+		const options = { signal: new AbortController().signal };
+
+		expect(resolved(customApiModel, context, options)).toBe(stream);
+		expect(registry.runtime.streamSimple).toHaveBeenCalledExactlyOnceWith(customApiModel, context, options);
+	});
+
 	it("matches getRegisteredProviderConfig().streamSimple by model.api", () => {
 		const cursorStream = vi.fn() as unknown as WorkerStreamSimple;
 		const otherStream = vi.fn() as unknown as WorkerStreamSimple;
