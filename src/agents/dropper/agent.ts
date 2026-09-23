@@ -314,8 +314,7 @@ export async function runDropper(
 		},
 	];
 	const context: AgentContext = {
-		systemPrompt: DROPPER_SYSTEM,
-		messages: [],
+		messages: [{ role: "system", content: DROPPER_SYSTEM, timestamp: Date.now() }],
 		tools: [dropObservations as AgentTool<any>],
 	};
 	const reasoning = (model as { reasoning?: unknown }).reasoning;
@@ -333,7 +332,12 @@ export async function runDropper(
 		toolExecution: "sequential",
 		...(reasoning && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
 		...(effectiveMaxTurns !== undefined
-			? { shouldStopAfterTurn: () => ++turnCount >= effectiveMaxTurns }
+			? {
+				finishTurn: (turn) => {
+					if (turn.message.stopReason === "error" || turn.message.stopReason === "aborted") return;
+					return ++turnCount >= effectiveMaxTurns ? { action: "end" } : undefined;
+				},
+			}
 			: {}),
 	};
 

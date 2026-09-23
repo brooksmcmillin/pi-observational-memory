@@ -69,6 +69,18 @@ describe("runReflector maxTokens clamping", () => {
 
 		expect(config().maxTokens).toBe(AGENT_LOOP_MAX_TOKENS);
 	});
+
+	it("uses finishTurn as a reflector turn cap without overriding hard exits", async () => {
+		const { loop, config } = captureLoopConfig();
+
+		await runReflector({ ...args, model: {} as any, agentLoop: loop, maxTurns: 2 });
+
+		expect(config().finishTurn).toBeTypeOf("function");
+		expect(config().finishTurn({ message: { stopReason: "error" } })).toBeUndefined();
+		expect(config().finishTurn({ message: { stopReason: "aborted" } })).toBeUndefined();
+		expect(config().finishTurn({ message: { stopReason: "toolUse" } })).toBeUndefined();
+		expect(config().finishTurn({ message: { stopReason: "stop" } })).toEqual({ action: "end" });
+	});
 });
 
 describe("V3 reflector agent", () => {
@@ -84,7 +96,7 @@ describe("V3 reflector agent", () => {
 	it("keeps core reflector prompt guidance in V3 terms", async () => {
 		let systemPrompt = "";
 		const loop = fakeAgentLoop((_prompts, context) => {
-			systemPrompt = context.systemPrompt;
+			systemPrompt = context.messages[0]?.role === "system" ? context.messages[0].content : "";
 		});
 
 		await runReflector({ ...baseArgs, agentLoop: loop });
