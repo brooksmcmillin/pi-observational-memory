@@ -19,6 +19,10 @@ export type ResolveResult =
 			env?: Record<string, string>;
 			baseUrl?: string;
 			streamFn: StreamFn;
+			/** True when this result came from `config.fallbackModel` after the primary failed. */
+			fallbackUsed?: boolean;
+			/** Primary failure reason recorded when `fallbackUsed` is true. */
+			primaryFailure?: string;
 	  }
 	| { ok: false; reason: string };
 
@@ -142,7 +146,38 @@ export class Runtime {
 		this.configLoaded = true;
 	}
 
+	/**
+	 * Resolve the model memory workers should use.
+	 *
+	 * Order: `config.model` (falling back to the session model when it is absent
+	 * from Pi's registry), then `config.fallbackModel` when the primary resolution
+	 * fails. With no fallback configured the primary reason is returned unchanged;
+	 * with a configured-but-broken fallback both reasons are reported.
+	 */
 	async resolveModel(ctx: ResolveCtx): Promise<ResolveResult> {
+		const primary = await this.resolvePrimaryModel(ctx);
+		if (primary.ok) return primary;
+		const fallback = await this.resolveFallbackModel(ctx);
+		if (!fallback.ok) {
+			return this.config.fallbackModel
+				? { ok: false, reason: `${primary.reason}; ${fallback.reason}` }
+				: primary;
+		}
+		const target = this.config.fallbackModel;
+		const provider = (fallback.model as { provider?: string }).provider ?? target?.provider ?? "unknown";
+		const id = (fallback.model as { id?: string }).id ?? target?.id ?? "unknown";
+		if (ctx.hasUI && ctx.ui) {
+			ctx.ui.notify(
+				`Observational memory: primary model unavailable (${primary.reason}); using fallback ${provider}/${id}`,
+				"warning",
+			);
+		}
+		debugLog("resolve.fallback_used", { provider, id, primaryFailure: primary.reason });
+		return { ...fallback, fallbackUsed: true, primaryFailure: primary.reason };
+	}
+
+	/** `config.model` when it resolves in Pi's registry, otherwise the session model. */
+	private async resolvePrimaryModel(ctx: ResolveCtx): Promise<ResolveResult> {
 		let model = ctx.model;
 		if (this.config.model) {
 			const configured = ctx.modelRegistry.find(
@@ -164,6 +199,28 @@ export class Runtime {
 				reason:
 					"no model available (session has no model and no observational-memory model configured)",
 			};
+		return this.resolveCandidate(ctx, model);
+	}
+
+	/** Resolve the optional fallback through the same dispatch and auth rules. */
+	async resolveFallbackModel(ctx: ResolveCtx): Promise<ResolveResult> {
+		const target = this.config.fallbackModel;
+		if (!target) return { ok: false, reason: "no fallback model configured" };
+		const configured = this.config.model;
+		const configuredResolved = configured
+			? (ctx.modelRegistry.find(configured.provider, configured.id) as { provider?: string; id?: string } | undefined)
+			: undefined;
+		const effectivePrimary = (configuredResolved ?? (ctx.model as { provider?: string; id?: string } | undefined));
+		if (effectivePrimary && effectivePrimary.provider === target.provider && effectivePrimary.id === target.id) {
+			return { ok: false, reason: `fallback model ${target.provider}/${target.id} is identical to the effective primary model` };
+		}
+		const model = ctx.modelRegistry.find(target.provider, target.id);
+		if (!model) return { ok: false, reason: `fallback model ${target.provider}/${target.id} not found` };
+		return this.resolveCandidate(ctx, model);
+	}
+
+	/** Apply provider dispatch and auth rules to primary and fallback models alike. */
+	private async resolveCandidate(ctx: ResolveCtx, model: unknown): Promise<ResolveResult> {
 		const { api, provider: modelProvider } = model as {
 			api?: string;
 			provider?: string;
