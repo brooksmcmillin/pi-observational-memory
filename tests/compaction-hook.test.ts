@@ -15,7 +15,7 @@ import {
 	type TestEntry,
 } from "./fixtures/session.js";
 
-function setup(args: { entries: TestEntry[]; observationsPoolMaxTokens?: number; compactHookInFlight?: boolean }) {
+function setup(args: { entries: TestEntry[]; observationsPoolMaxTokens?: number; compactHookInFlight?: boolean; compactionSummaryMaxTokens?: number }) {
 	let handler: ((event: unknown, ctx: unknown) => Promise<unknown>) | undefined;
 	const pi = {
 		on: vi.fn((eventName: string, cb: typeof handler) => {
@@ -27,6 +27,7 @@ function setup(args: { entries: TestEntry[]; observationsPoolMaxTokens?: number;
 	const runtime = {
 		config: {
 			observationsPoolMaxTokens: args.observationsPoolMaxTokens ?? 20_000,
+			compactionSummaryMaxTokens: args.compactionSummaryMaxTokens,
 		},
 		compactHookInFlight: args.compactHookInFlight ?? false,
 		observerPromise: new Promise(() => {}),
@@ -159,6 +160,35 @@ describe("V3 compaction hook", () => {
 		expect(result.compaction.details.observations.map((item: any) => item.id)).toEqual([
 			"aaaaaaaaaaaa", "cccccccccccc",
 		]);
+	});
+
+	it("retries budget-omitted observations without replaying rendered prose", async () => {
+		const older = observation("aaaaaaaaaaaa", { content: "a".repeat(500) });
+		const newer = observation("bbbbbbbbbbbb", { content: "b".repeat(500) });
+		const entries = [
+			textCustomMessage("raw-1", "one"),
+			observationsRecordedEntry("om-1", { observations: [older, newer], coversUpToId: "raw-1" }),
+		];
+		const { run } = setup({ entries, compactionSummaryMaxTokens: 500 });
+		const first = await run("raw-1") as any;
+		expect(first.compaction.details.observations.map((obs: any) => obs.id)).toEqual([newer.id]);
+		entries.push(compactionEntry("cmp-1", first.compaction));
+		const second = await run("raw-1") as any;
+		expect(second.compaction.details.observations.map((obs: any) => obs.id)).toEqual([older.id]);
+		expect(second.compaction.summary).not.toContain(newer.content);
+	});
+
+	it("delegates rather than silently dropping oversized pinned state", async () => {
+		const pinned = observation("aaaaaaaaaaaa", {
+			content: "p".repeat(2400),
+			workingState: { slot: "next_action", key: "current", status: "active" },
+		});
+		const entries = [
+			textCustomMessage("raw-1", "one"),
+			observationsRecordedEntry("om-1", { observations: [pinned], coversUpToId: "raw-1" }),
+		];
+		const { run } = setup({ entries, compactionSummaryMaxTokens: 500 });
+		expect(await run("raw-1")).toBeUndefined();
 	});
 
 	it("delegates to native compaction when only old V2 memory exists", async () => {
