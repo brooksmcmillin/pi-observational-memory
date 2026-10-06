@@ -70,6 +70,13 @@ export type MemoryDetails = {
 	/** Marks details whose observation/reflection arrays match the rendered incremental summary. */
 	summaryMode?: "incremental";
 	renderedThroughId?: string;
+	/**
+	 * Entry through which this summary folded the ledger. Differs from the
+	 * compaction's `firstKeptEntryId` when the hook moved the cut to retain
+	 * unobserved source. A later compaction uses it as the maintenance boundary
+	 * for drops and reflections, so it applies exactly what this fold applied.
+	 */
+	foldThroughEntryId?: string;
 };
 
 export type V3MemoryCustomType =
@@ -171,7 +178,8 @@ export function isMemoryDetails(value: unknown): value is MemoryDetails {
 		Array.isArray(value.reflections) &&
 		value.reflections.every(isReflection) &&
 		(value.summaryMode === undefined || value.summaryMode === "incremental") &&
-		(value.renderedThroughId === undefined || isNonEmptyString(value.renderedThroughId))
+		(value.renderedThroughId === undefined || isNonEmptyString(value.renderedThroughId)) &&
+		(value.foldThroughEntryId === undefined || typeof value.foldThroughEntryId === "string")
 	);
 }
 
