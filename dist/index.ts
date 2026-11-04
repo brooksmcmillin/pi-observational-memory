@@ -1863,9 +1863,7 @@ async function runObserver(args) {
     }
   };
   const now = nowTimestamp();
-  const userText = `Current local time: ${now}
-
-CURRENT REFLECTIONS:
+  const userText = `CURRENT REFLECTIONS:
 ${joinOrEmpty(priorReflections)}
 
 CURRENT OBSERVATIONS:
@@ -1873,6 +1871,8 @@ ${joinOrEmpty(priorObservations)}
 
 CURRENT WORKING STATE:
 ${joinOrEmpty(priorWorkingState)}
+
+Current local time: ${now}
 
 Compress the following new conversation chunk into observations by calling record_observations one or more times. Do not restate facts already present in current reflections or current observations. Prefer inline conversation timestamps when assigning times; fall back to the current local time above only if no message timestamp applies. Stop calling the tool and reply with a short plain-text confirmation once the chunk is fully covered.
 
@@ -3505,6 +3505,11 @@ function countUsableHeaders(headers) {
     (value) => typeof value === "string" && value.length > 0
   ).length;
 }
+var MAX_NOTIFY_ERROR_CHARS = 200;
+function formatNotifyError(message) {
+  const flattened = message.replace(/\s+/g, " ").trim();
+  return flattened.length > MAX_NOTIFY_ERROR_CHARS ? `${flattened.slice(0, MAX_NOTIFY_ERROR_CHARS)}\u2026` : flattened;
+}
 var AVAILABILITY_RECHECK_TIMEOUT_MS = 5e3;
 var AVAILABILITY_RECHECK_REARM_MS = 6e4;
 function hasConfiguredProviderCredential(registry, model) {
@@ -3739,7 +3744,7 @@ var Runtime = class {
     if (phase === "dropper") this.lastDropperError = message;
     if (ctx.hasUI && ctx.ui)
       ctx.ui.notify(
-        `Observational memory: ${phase} failed: ${message}`,
+        `Observational memory: ${phase} failed: ${formatNotifyError(message)}`,
         "warning"
       );
     return message;
@@ -3755,7 +3760,7 @@ var Runtime = class {
         errorMessage = error instanceof Error ? error.message : String(error);
         if (hasUI && ui)
           ui.notify(
-            `Observational memory: ${label} failed: ${errorMessage}`,
+            `Observational memory: ${label} failed: ${formatNotifyError(errorMessage)}`,
             "warning"
           );
       } finally {
