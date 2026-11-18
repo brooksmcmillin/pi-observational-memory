@@ -90,6 +90,64 @@ describe("V3 compaction trigger", () => {
 		expect(ctx.compact).not.toHaveBeenCalled();
 	});
 
+	it("does not count large persisted system setup toward compaction", async () => {
+		const { handler } = captureHandler({ compactAfterTokens: 81000 });
+		const system = rawMessage("system", "", { message: {
+			role: "system", sections: { instructions: "s".repeat(66491 * 4) },
+		} });
+		const ctx = fakeCtx([covered([system, rawMessage("user", "u".repeat(15441 * 4))])]);
+		handler(agentSettled(), ctx);
+		await vi.runAllTimersAsync();
+		expect(ctx.compact).not.toHaveBeenCalled();
+	});
+
+	it("suppresses an unchanged ineligible range but retries after source or settings changes", async () => {
+		const { handler, runtime } = captureHandler();
+		let branch = [...dueBranch, rawMessage("existing-unobserved", "more source")];
+		let settings = { keepRecentTokens: 20000 };
+		(runtime as any).compactionSettings = () => settings;
+		const ctx = fakeCtx([branch], { sessionManager: { getBranch: () => branch } });
+		ctx.compact.mockImplementation((options: any) => options.onError(new Error("Nothing to compact (session too small)")));
+		const fire = async () => { handler(agentSettled(), ctx); await vi.runAllTimersAsync(); };
+		await fire();
+		await fire();
+		branch = covered(branch, "existing-unobserved");
+		await fire();
+		expect(ctx.compact).toHaveBeenCalledTimes(1);
+		settings = { keepRecentTokens: 10000 };
+		await fire();
+		expect(ctx.compact).toHaveBeenCalledTimes(2);
+		branch = covered([...branch, rawMessage("new-source", "more")]);
+		await fire();
+		expect(ctx.compact).toHaveBeenCalledTimes(3);
+	});
+
+	it("allows retry after context edits or switching sessions", async () => {
+		const { handler } = captureHandler();
+		let branch = dueBranch;
+		let sessionId = "first";
+		const ctx = fakeCtx([branch], { sessionManager: { getBranch: () => branch, getSessionId: () => sessionId } });
+		ctx.compact.mockImplementation((options: any) => options.onError(new Error("Nothing to compact (session too small)")));
+		const fire = async () => { handler(agentSettled(), ctx); await vi.runAllTimersAsync(); };
+		await fire();
+		branch = [...branch, { type: "context_edit", id: "edit", parentId: null, timestamp: "2026-05-02T10:00:00.000Z" }];
+		await fire();
+		sessionId = "second";
+		await fire();
+		expect(ctx.compact).toHaveBeenCalledTimes(3);
+	});
+
+	it("does not suppress retry after unrelated compaction errors", async () => {
+		const { handler } = captureHandler();
+		const ctx = fakeCtx([dueBranch]);
+		ctx.compact.mockImplementation((options: any) => options.onError(new Error("network failure")));
+		for (let i = 0; i < 2; i++) {
+			handler(agentSettled(), ctx);
+			await vi.runAllTimersAsync();
+		}
+		expect(ctx.compact).toHaveBeenCalledTimes(2);
+	});
+
 	it("calls compact when compactAfterTokens is reached", async () => {
 		const { handler, runtime } = captureHandler({ compactAfterTokens: 3 });
 		const ctx = fakeCtx([dueBranch]);

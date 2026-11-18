@@ -165,6 +165,22 @@ function setup(args: {
 }
 
 describe("V3 consolidation trigger", () => {
+	it.each([false, true])("does not schedule initial memory work from system overhead (observed=%s)", async (observed) => {
+		const entries = [rawMessage("system", "", { message: {
+			role: "system", sections: { instructions: "s".repeat(66491 * 4) },
+		} }), rawMessage("user", "u".repeat(15441 * 4))];
+		if (observed) entries.push(observationsRecordedEntry("coverage", {
+			observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["user"] })], coversUpToId: "user",
+		}));
+		const test = setup({ entries, observeAfterTokens: 20000, reflectAfterTokens: 20000 });
+		(test.ctx as any).getContextUsage = () => ({ tokens: 81932 });
+		await test.fire();
+		await test.runLaunchedWork();
+		expect(test.runtime.launchConsolidationTask).not.toHaveBeenCalled();
+		expect(mockAgents.runObserver).not.toHaveBeenCalled();
+		expect(mockAgents.runReflector).not.toHaveBeenCalled();
+	});
+
 	const obsA = observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-1"], tokenCount: 10 });
 	const obsB = observation("bbbbbbbbbbbb", { sourceEntryIds: ["raw-2"], tokenCount: 10 });
 	const refA = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]);

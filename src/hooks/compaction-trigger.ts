@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { resolveCompactAfterTokens } from "../config.js";
-import { observedTokensSinceLastCompaction, rawTokensSinceLastCompaction, type Entry } from "../session-ledger/index.js";
+import { isSourceEntry, observedTokensSinceLastCompaction, rawTokensSinceLastCompaction, type Entry } from "../session-ledger/index.js";
 import type { Runtime } from "../runtime.js";
 
 /**
@@ -23,7 +23,19 @@ export function progressLabel(runtime: Runtime): "observed" | "estimated" {
 
 type CompactionTriggerCtx = Parameters<Parameters<ExtensionAPI["on"]>[1]>[1];
 
+function attemptKey(runtime: Runtime, ctx: CompactionTriggerCtx, entries: Entry[]): string {
+	return JSON.stringify([
+		ctx.sessionManager.getSessionId?.(), ctx.cwd, ctx.model?.provider, ctx.model?.id,
+		ctx.model?.contextWindow, resolveCompactAfterTokens(runtime.config, ctx.model?.contextWindow),
+		runtime.config.piAutoCompactionEnabled, runtime.compactionSettings?.(),
+		entries.filter((entry) => isSourceEntry(entry) || entry.type === "compaction" || entry.type === "context_edit")
+			.map((entry) => entry.id),
+	]);
+}
+
 export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): void {
+	const settingsApi = pi as ExtensionAPI & { getSettings?: () => { compaction?: unknown } };
+	runtime.compactionSettings = () => settingsApi.getSettings?.().compaction;
 	// Pi emits agent_settled only after retries, automatic compaction, and queued
 	// continuation have finished, so retry policy stays owned by Pi.
 	pi.on("agent_settled", (_event, ctx) => maybeTriggerCompaction(runtime, ctx));
@@ -46,6 +58,7 @@ export function maybeTriggerCompaction(runtime: Runtime, ctx: CompactionTriggerC
 		const contextWindow = typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : undefined;
 		const threshold = resolveCompactAfterTokens(runtime.config, contextWindow);
 		if (progress < threshold) return;
+		if (attemptKey(runtime, ctx, entries) === runtime.compactRejectedKey) return;
 
 		// Capture ctx properties synchronously — the setTimeout + async work below
 		// may outlive the extension ctx (stale after session replacement/reload).
@@ -82,13 +95,23 @@ export function maybeTriggerCompaction(runtime: Runtime, ctx: CompactionTriggerC
 					);
 					return;
 				}
+				const key = attemptKey(runtime, ctx, currentEntries);
+				if (key === runtime.compactRejectedKey) {
+					runtime.compactInFlight = false;
+					return;
+				}
 				ctx.compact({
 					onComplete: () => {
 						runtime.compactInFlight = false;
+						runtime.compactRejectedKey = undefined;
 						if (hasUI) ui?.notify("Observational memory: compaction complete", "info");
 					},
 					onError: (error: { message: string }) => {
 						runtime.compactInFlight = false;
+						if (error.message === "Nothing to compact (session too small)") {
+							// Memory ledger writes alone cannot create a removable source range.
+							runtime.compactRejectedKey = key;
+						}
 						if (error.message === "Compaction cancelled") {
 							// We already notified the user with the real reason before returning { cancel: true }.
 							return;
