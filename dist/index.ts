@@ -356,7 +356,7 @@ function buildObservationsDroppedData(observationIds, coversUpToId) {
 // src/session-ledger/progress.ts
 var SOURCE_ENTRY_TYPES = /* @__PURE__ */ new Set(["message", "custom_message", "branch_summary"]);
 function isSourceEntry(entry) {
-  return SOURCE_ENTRY_TYPES.has(entry.type);
+  return SOURCE_ENTRY_TYPES.has(entry.type) && !(entry.type === "message" && isObject(entry.message) && entry.message.role === "system");
 }
 function entryIndexById(entries) {
   const idToIndex = /* @__PURE__ */ new Map();
@@ -493,7 +493,7 @@ function realTokensSinceAnchor(entries, customType, currentContextTokens) {
     const delta = currentContextTokens - baseline;
     return delta >= 0 ? delta : void 0;
   }
-  return Math.max(0, currentContextTokens);
+  return void 0;
 }
 function compactionRangeStartIndex(entries) {
   const compactionIndex = findLastCompactionIndex(entries);
@@ -1053,7 +1053,22 @@ function compactionProgress(runtime, entries) {
 function progressLabel(runtime) {
   return runtime.config.piAutoCompactionEnabled === false ? "estimated" : "observed";
 }
+function attemptKey(runtime, ctx, entries) {
+  return JSON.stringify([
+    ctx.sessionManager.getSessionId?.(),
+    ctx.cwd,
+    ctx.model?.provider,
+    ctx.model?.id,
+    ctx.model?.contextWindow,
+    resolveCompactAfterTokens(runtime.config, ctx.model?.contextWindow),
+    runtime.config.piAutoCompactionEnabled,
+    runtime.compactionSettings?.(),
+    entries.filter((entry) => isSourceEntry(entry) || entry.type === "compaction" || entry.type === "context_edit").map((entry) => entry.id)
+  ]);
+}
 function registerCompactionTrigger(pi, runtime) {
+  const settingsApi = pi;
+  runtime.compactionSettings = () => settingsApi.getSettings?.().compaction;
   pi.on("agent_settled", (_event, ctx) => maybeTriggerCompaction(runtime, ctx));
 }
 function maybeTriggerCompaction(runtime, ctx) {
@@ -1067,6 +1082,7 @@ function maybeTriggerCompaction(runtime, ctx) {
     const contextWindow = typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : void 0;
     const threshold = resolveCompactAfterTokens(runtime.config, contextWindow);
     if (progress < threshold) return;
+    if (attemptKey(runtime, ctx, entries) === runtime.compactRejectedKey) return;
     const hasUI = ctx.hasUI;
     const ui = ctx.ui;
     if (hasUI) ui?.notify(
@@ -1098,13 +1114,22 @@ function maybeTriggerCompaction(runtime, ctx) {
           );
           return;
         }
+        const key = attemptKey(runtime, ctx, currentEntries);
+        if (key === runtime.compactRejectedKey) {
+          runtime.compactInFlight = false;
+          return;
+        }
         ctx.compact({
           onComplete: () => {
             runtime.compactInFlight = false;
+            runtime.compactRejectedKey = void 0;
             if (hasUI) ui?.notify("Observational memory: compaction complete", "info");
           },
           onError: (error) => {
             runtime.compactInFlight = false;
+            if (error.message === "Nothing to compact (session too small)") {
+              runtime.compactRejectedKey = key;
+            }
             if (error.message === "Compaction cancelled") {
               return;
             }
@@ -3528,6 +3553,8 @@ var Runtime = class {
   /** Aborts the in-flight consolidation run's model calls (see `consolidateWhenIdle`). */
   consolidationAbortController;
   compactInFlight = false;
+  compactRejectedKey;
+  compactionSettings;
   compactHookInFlight = false;
   resolveFailureNotified = false;
   lastObserverError;

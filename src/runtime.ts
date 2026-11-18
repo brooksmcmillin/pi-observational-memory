@@ -142,6 +142,8 @@ export class Runtime {
 	/** Aborts the in-flight consolidation run's model calls (see `consolidateWhenIdle`). */
 	consolidationAbortController: AbortController | undefined;
 	compactInFlight = false;
+	compactRejectedKey: string | undefined;
+	compactionSettings: (() => unknown) | undefined;
 	compactHookInFlight = false;
 	resolveFailureNotified = false;
 	lastObserverError: string | undefined;

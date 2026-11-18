@@ -10,7 +10,8 @@ import {
 const SOURCE_ENTRY_TYPES = new Set(["message", "custom_message", "branch_summary"]);
 
 export function isSourceEntry(entry: Entry): boolean {
-	return SOURCE_ENTRY_TYPES.has(entry.type);
+	return SOURCE_ENTRY_TYPES.has(entry.type)
+		&& !(entry.type === "message" && isObject(entry.message) && entry.message.role === "system");
 }
 
 export function entryIndexById(entries: Entry[]): Map<string, number> {
@@ -233,7 +234,9 @@ export function realTokensSinceAnchor(
 		const delta = currentContextTokens - baseline;
 		return delta >= 0 ? delta : undefined;
 	}
-	return Math.max(0, currentContextTokens);
+	// Without an anchor, aggregate usage includes system/tool setup, not just
+	// source history. Let callers use the eligible-source estimate instead.
+	return undefined;
 }
 
 /**

@@ -11,6 +11,8 @@ import {
 	rawTokensSinceLastCompaction,
 	rawTokensSinceObservationCoverage,
 	rawTokensSinceReflectionCoverage,
+	observedTokensSinceLastCompaction,
+	realTokensSinceAnchor,
 } from "../src/session-ledger/index.js";
 import {
 	V3_OBSERVATIONS_DROPPED,
@@ -23,6 +25,7 @@ import {
 	observationsRecordedEntry,
 	oldV2ObservationEntry,
 	reflection,
+	rawMessage,
 	reflectionsRecordedEntry,
 	textCustomMessage,
 } from "./fixtures/session.js";
@@ -36,6 +39,19 @@ describe("session-ledger V3 progress helpers", () => {
 			coversUpToId: "raw-1",
 		}))).toBe(false);
 		expect(isSourceEntry(compactionEntry("cmp-1"))).toBe(false);
+	});
+
+	it("excludes persisted system snapshots from raw and observed source progress", () => {
+		const system = rawMessage("system", "", { message: {
+			role: "system", sections: { instructions: "s".repeat(66491 * 4) },
+			toolsAdded: [{ name: "tool", description: "schema" }],
+		} });
+		const entries = [system, rawMessage("user", "u".repeat(15441 * 4)),
+			observationsRecordedEntry("coverage", { observations: [observation("aaaaaaaaaaaa")], coversUpToId: "user" })];
+		expect(isSourceEntry(system)).toBe(false);
+		expect(rawTokensSinceLastCompaction(entries)).toBe(15441);
+		expect(observedTokensSinceLastCompaction(entries)).toBe(15441);
+		expect(realTokensSinceAnchor(entries, V3_REFLECTIONS_RECORDED, 81932)).toBeUndefined();
 	});
 
 	it("builds a branch id to index map", () => {

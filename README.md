@@ -377,9 +377,18 @@ The important part: compaction does not need to rethink the whole session from s
 
 The proactive compaction threshold counts estimated source-entry tokens after
 the latest compaction boundary. It includes source entries retained by
-`firstKeptEntryId` and newer source entries, while memory ledger entries and
-compaction metadata contribute zero. `/om:status` uses the same metric. Pi's
-own window-pressure compaction remains independent.
+`firstKeptEntryId` and newer source entries, while persisted system messages,
+memory ledger entries, and compaction metadata contribute zero. `/om:status`
+uses the same metric. Initial observation and reflection scheduling uses source
+estimates, not total provider context (which includes system/tool setup); once
+an anchor exists, provider growth can also make a stage due. Pi's own
+window-pressure compaction remains independent.
+
+If Pi reports “Nothing to compact”, proactive attempts pause for that unchanged
+source range. New source history, context edits, compaction, or changed model or
+compaction settings permit another attempt. Memory ledger writes alone do not.
+Native settings changes are detected on hosts exposing `getSettings`; manual
+`/compact` remains available on all supported hosts.
 
 ---
 
